@@ -157,6 +157,12 @@ def _replay(task: dict, graph: Topology, solution: dict) -> dict:
     ar_state = [[1 << i] * split for i in range(len(ranks))]
     sent_reductions: set[tuple[int, int, int, int]] = set()
     path_cache: dict[tuple[str, ...], tuple[tuple, tuple, float, float]] = {}
+    # The same immutable payload is multicast to several destinations. Cache
+    # only its validated chunk mask, never sender ownership or receive state:
+    # those still have to be checked separately for every transfer and round.
+    ag_payloads: dict[tuple[str, ...], int] = {}
+    ag_bits = {token: 1 << (owner * split + slot)
+               for token, (owner, slot) in chunk_ids.items()} if operator == "all-gather" else {}
     round_times: list[float] = []
 
     for number, round_data in enumerate(rounds, 1):
@@ -184,21 +190,27 @@ def _replay(task: dict, graph: Topology, solution: dict) -> dict:
                 action = transfer.get("action")
                 _require(action in ("copy", "reduce"), "unknown transfer action")
                 _require(action != "copy" or task.get("allow_copy", True), "copy is disabled by the task")
-                tokens = _unique_strings(transfer.get("chunk_ranges"), "chunk_ranges")
+                tokens = transfer.get("chunk_ranges")
+                _require(isinstance(tokens, list), "chunk_ranges must be an array")
                 _require(bool(tokens), "transfer must carry at least one chunk")
 
                 if operator == "all-gather":
                     _require(action == "copy", "AllGather only permits copy")
-                    mask = 0
-                    for token in tokens:
-                        _require(token in chunk_ids, f"unknown AllGather chunk: {token}")
-                        owner, slot = chunk_ids[token]
-                        mask |= 1 << (owner * split + slot)
+                    payload_key = tuple(tokens)
+                    mask = ag_payloads.get(payload_key)
+                    if mask is None:
+                        _unique_strings(tokens, "chunk_ranges")
+                        mask = 0
+                        for token in tokens:
+                            _require(token in ag_bits, f"unknown AllGather chunk: {token}")
+                            mask |= ag_bits[token]
+                        ag_payloads[payload_key] = mask
                     _require(mask & ag_state[src] == mask, "sender does not possess chunks at the start of the round")
                     _require(not mask & (ag_state[dst] | pending_ag[dst]), "destination receives an already held or duplicated chunk")
                     pending_ag[dst] |= mask
                     payload = len(tokens) * chunk_bytes
                 else:
+                    _unique_strings(tokens, "chunk_ranges")
                     payload_slots: set[int] = set()
                     for token in tokens:
                         slot, contributors = expression(token)

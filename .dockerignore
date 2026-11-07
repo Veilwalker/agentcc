@@ -1,5 +1,8 @@
 *
 !src/
 !src/**
+!native/
+!native/**
+src/**/*.so
 src/**/__pycache__/
 src/**/*.pyc

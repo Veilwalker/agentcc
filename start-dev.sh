@@ -10,5 +10,5 @@ docker run -dit \
     agenthack/base:1.1.1 \
     /bin/bash
 
-# 进入容器：sudo docker exec -it agentcc-dev /bin/bash
-# 已有容器停止后再次启动：sudo docker start agentcc-dev
+# 进入容器：docker exec -it agentcc-dev /bin/bash
+# 已有容器停止后再次启动：docker start agentcc-dev

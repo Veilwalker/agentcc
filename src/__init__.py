@@ -1,3 +1,3 @@
 """AgentCC entrant implementation, independently versioned from the rules."""
 
-__version__ = "1.6"
+__version__ = "1.12"

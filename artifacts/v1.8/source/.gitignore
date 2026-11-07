@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.so
+.venv/
+vendor/
+/materials/
+
+# Keep release source snapshots and navigation; omit local experiments and bundles.
+/artifacts/*
+!/artifacts/README.md
+!/artifacts/index.html
+!/artifacts/v*/
+/artifacts/v*/*
+!/artifacts/v*/README.md
+!/artifacts/v*/source/

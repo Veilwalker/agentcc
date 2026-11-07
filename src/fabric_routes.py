@@ -11,6 +11,7 @@ import time
 
 from .route_balance import _PathCosts, _RoundLoad
 from .replay import replay
+from .capacity_backend import native, NativeCapacityAssignment
 
 
 class RouteCatalog:
@@ -125,10 +126,19 @@ class CapacityCosts:
         self.indices = {('edge', edge): i for i, edge in enumerate(graph.edges)}
         self.indices.update({('pool', key): len(graph.edges) + i for i, key in enumerate(graph.resources)})
         self.paths = {}
+        self._native_graph = None
 
     def compile(self, path):
         path = tuple(path)
         if path not in self.paths:
+            if native is not None:
+                graph = self.graph
+                if self._native_graph is None:
+                    self._native_graph = native.make_capacity_graph(
+                        graph.edges, graph.edge_resources, graph.resources,
+                        self.indices, graph.startup_us, graph.switch_overhead_us)
+                self.paths[path] = native.compile_cached_path(self._native_graph, path)
+                return self.paths[path]
             graph, pools, terms, serial = self.graph, defaultdict(int), [], 0.0
             for edge in zip(path, path[1:]):
                 inverse = 1e6 / graph.edges[edge]
@@ -143,7 +153,7 @@ class CapacityCosts:
         return self.paths[path]
 
 
-class CapacityAssignment:
+class PythonCapacityAssignment:
     def __init__(self, costs):
         self.loads = [0.0] * len(costs.indices)
         self.busy = self.overhead = self.serial = 0.0
@@ -181,6 +191,9 @@ class CapacityAssignment:
         self.overhead = max(self.overhead, overhead)
         self.serial = max(self.serial, overhead + packet_bytes * serial)
         return path
+
+
+CapacityAssignment = NativeCapacityAssignment if native is not None else PythonCapacityAssignment
 
 
 def assign(task, graph, solution, *, catalog=None, validated_report=None):

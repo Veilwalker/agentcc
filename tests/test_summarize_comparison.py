@@ -130,6 +130,16 @@ class AnalysisTests(unittest.TestCase):
         regression = report["comparisons"]["1.3"]["1.2"]["regressions"]
         self.assertEqual({row["metric"] for row in regression}, {"request_s", "tokens"})
 
+    def test_successful_feedback_retry_keeps_all_costs(self):
+        repaired = observation("1.3", request=12, tokens=900)
+        repaired['calls'] = 2
+        report = analysis.summarize([self.write('repair.json', summary([repaired]))])
+        group = report['groups'][0]
+        self.assertEqual(group['valid_requests'], 1)
+        self.assertEqual(group['llm_calls_total'], 2)
+        self.assertEqual(group['tokens_total_all_requests'], 900)
+        self.assertEqual(group['metrics']['request_s']['median'], 12)
+
     def test_zero_duration_does_not_create_infinite_or_undefined_speedup(self):
         data = summary([observation("1.2", communication=0), observation("1.3", communication=0)])
         report = analysis.summarize([self.write("zero.json", data)])

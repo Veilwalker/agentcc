@@ -21,7 +21,7 @@ def validate_widths(widths, dimensions, max_width=3):
 
 class StageSpace:
     """Cache independently measurable stage transitions, not instance answers."""
-    def __init__(self, task, graph, split, order=None, catalog=None, max_width=3):
+    def __init__(self, task, graph, split, order=None, catalog=None, max_width=3, root_positions=None):
         self.task, self.graph, self.split = task, graph, split
         self.order = list(graph.ranks) if order is None else list(order)
         n = len(self.order)
@@ -31,6 +31,10 @@ class StageSpace:
         if type(max_width) is not int or not 1 <= max_width <= 8:
             raise ValueError('maximum dimension width must be in 1..8')
         self.max_width = max_width
+        if root_positions is not None and (len(root_positions) != split or
+                any(type(r) is not int or not 0 <= r < n for r in root_positions)):
+            raise ValueError("root positions must provide one rank index per chunk")
+        self.root_positions = tuple(root_positions) if root_positions is not None else None
         if split not in task.get('split_policy', {}).get('candidates', [task.get('split', 1)]):
             raise ValueError('split is not allowed')
         total = task['data_size']['per_rank_bytes']
@@ -43,6 +47,8 @@ class StageSpace:
         self.costs = self.catalog.capacity_costs
         self.options = self.catalog.compiled_options
         self.stages = {}
+        self.movement_counts = {}
+        self.phase_times = {}
         self.materialized = {}
 
     def _route(self, movements):
@@ -87,7 +93,9 @@ class StageSpace:
                         for i in range(0, count, step))
         return rows
 
-    def _movements(self, first, width, *, atoms=False):
+    def _movements(self, first, width, *, atoms=False, phase=None):
+        if phase not in (None, 0, 1):
+            raise ValueError('phase must be reduction, broadcast or both')
         task, order, n = self.task, self.order, len(self.order)
         if task['operator'] == 'all-gather':
             movements = {}
@@ -105,7 +113,7 @@ class StageSpace:
         stride += stride % 2 == 0
         distance, factor = 1 << first, 1 << width
         for slot in range(self.split):
-            root = slot * stride % n
+            root = self.root_positions[slot] if self.root_positions is not None else slot * stride % n
             perm = [order[i ^ root] for i in range(n)]
             for start in range(0, n, distance * factor):
                 destination = perm[start]
@@ -113,12 +121,16 @@ class StageSpace:
                     branch = start + j * distance
                     source = perm[branch]
                     if atoms:
-                        contributors = '+'.join(f'{rank}_c{slot}' for rank in perm[branch:branch + distance])
-                        reduce['reduce', source, destination].append(contributors)
-                        broadcast['copy', destination, source].append(f'c{slot}_sum')
+                        if phase != 1:
+                            contributors = '+'.join(f'{rank}_c{slot}' for rank in perm[branch:branch + distance])
+                            reduce['reduce', source, destination].append(contributors)
+                        if phase != 0:
+                            broadcast['copy', destination, source].append(f'c{slot}_sum')
                     else:
-                        reduce['reduce', source, destination] += 1
-                        broadcast['copy', destination, source] += 1
+                        if phase != 1:
+                            reduce['reduce', source, destination] += 1
+                        if phase != 0:
+                            broadcast['copy', destination, source] += 1
         return reduce, broadcast
 
     def transition(self, first, width):
@@ -126,10 +138,13 @@ class StageSpace:
             raise ValueError('invalid stage transition')
         key = first, width
         if key not in self.stages:
-            forward, backward = self._movements(first, width)
+            if key not in self.movement_counts:
+                self.movement_counts[key] = self._movements(first, width)
+            forward, backward = self.movement_counts[key]
             rows, cost_r = self._route_counts(forward)
             copies, cost_b = self._route_counts(backward) if backward else ([], 0.0)
             self.stages[key] = rows, copies, cost_r + cost_b
+            self.phase_times[key] = (cost_r, cost_b)
         return self.stages[key]
 
     def table(self):

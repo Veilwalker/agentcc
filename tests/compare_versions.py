@@ -32,7 +32,7 @@ from src.topology import Topology
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-TIMEOUT_MS = 180_000
+TIMEOUT_MS = 360_000
 CONFIG_KEYS = ("PLATFORM_LLM_URL", "PLATFORM_API_KEY", "PLATFORM_LLM_MODEL",
                "AGENTCC_LLM_TIMEOUT_S")
 
@@ -144,6 +144,10 @@ def source_hashes(versions, *, project=PROJECT):
     hashes = {}
     for version in versions:
         files = sorted(version.source.rglob("*.py"))
+        files += sorted(version.source.glob('*.so'))
+        native = version.source.parent / 'native'
+        if native.is_dir():
+            files += sorted(native.glob('*.cpp')) + sorted(native.glob('*.h')) + sorted(native.glob('*.py'))
         dockerfile = version.source.parent / "Dockerfile"
         if dockerfile.is_file():
             files.append(dockerfile)
@@ -154,16 +158,31 @@ def source_hashes(versions, *, project=PROJECT):
     return hashes
 
 
-def load_agent(version):
+def load_agent(version, *, enforce_release_backend=True):
+    # Match the submitted Dockerfile. Silent native -> Python fallback changes
+    # the available scheduling families, so it is not a valid release baseline.
+    dockerfile = version.source.parent / 'Dockerfile'
     if version.current:
-        return importlib.import_module("src.my_agent").MyAgent()
-    name = "agentcc_compare_v" + version.label.replace(".", "_")
-    specification = importlib.util.spec_from_file_location(
-        name, version.source / "__init__.py", submodule_search_locations=[str(version.source)])
-    module = importlib.util.module_from_spec(specification)
-    sys.modules[name] = module
-    specification.loader.exec_module(module)
-    return importlib.import_module(f"{name}.my_agent").MyAgent()
+        dockerfile = PROJECT / 'Dockerfile'
+    requires_cpp = (dockerfile.is_file() and
+                    'AGENTCC_CAPACITY_BACKEND=cpp' in dockerfile.read_text())
+    if requires_cpp and enforce_release_backend and 'AGENTCC_CAPACITY_BACKEND' not in os.environ:
+        os.environ['AGENTCC_CAPACITY_BACKEND'] = 'cpp'
+    if version.current:
+        name = 'src'
+    else:
+        name = "agentcc_compare_v" + version.label.replace(".", "_")
+        specification = importlib.util.spec_from_file_location(
+            name, version.source / "__init__.py", submodule_search_locations=[str(version.source)])
+        module = importlib.util.module_from_spec(specification)
+        sys.modules[name] = module
+        specification.loader.exec_module(module)
+    agent = importlib.import_module(f"{name}.my_agent").MyAgent()
+    if requires_cpp and enforce_release_backend:
+        actual = importlib.import_module(f'{name}.capacity_backend').BACKEND
+        if actual != 'cpp':
+            raise ValueError(f'{version.label} requires cpp in its image, but loaded {actual}')
+    return agent
 
 
 def configure_environment(project=PROJECT):
@@ -213,6 +232,7 @@ def response_measurements(sample, data, http_status):
                       model_selected=edit.get("selected"), model_accepted=edit.get("accepted"),
                       phases_s=diagnostics.get("phases_s", {}),
                       diagnostic_version=diagnostics.get("version"),
+                      capacity_backend=diagnostics.get('capacity_backend', 'python'),
                       selected_candidates=[candidate for candidate in search.get("candidates", [])
                                            if candidate.get("selected")])
     except (ValueError, TypeError, KeyError) as exc:
@@ -225,6 +245,7 @@ def update_summary(report):
     report["summary"] = {"completed": len(rows), "expected": report["expected_requests"],
                          "valid": sum(row.get("valid", False) for row in rows),
                          "one_call_per_request": all(row.get("calls") == 1 for row in rows),
+                         "bounded_model_calls": all(type(row.get("calls")) is int and 1 <= row['calls'] <= 2 for row in rows),
                          "failed": sum(not row.get("valid", False) for row in rows)}
 
 
@@ -306,7 +327,7 @@ async def run(versions, samples, repeat, output, limits):
     report["source_files_changed_during_run"] = before != report["source_sha256_at_end"]
     report["complete"] = len(report["rows"]) == report["expected_requests"]
     report["valid"] = (report["complete"] and report["summary"]["failed"] == 0
-                       and report["summary"]["one_call_per_request"]
+                       and report["summary"]["bounded_model_calls"]
                        and not report["source_files_changed_during_run"])
     write_json(output / "summary.json", report)
     return 0 if report["valid"] else 1

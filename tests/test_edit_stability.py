@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from tests.image_runtime import interpreter_command
 
 from src.collectives import build
 from src.llm import build_edit_request
@@ -67,7 +68,7 @@ system,user,_=build_edit_request(task,problem)
 print(hashlib.sha256(json.dumps([system,user]).encode()).hexdigest())
 """
         root = Path(__file__).resolve().parents[1]
-        results = [subprocess.check_output([sys.executable, "-c", script], cwd=root,
+        results = [subprocess.check_output([*interpreter_command(), "-c", script], cwd=root,
                                            env={**os.environ, "PYTHONHASHSEED": str(seed)}, text=True).strip()
                    for seed in (3, 41, 137)]
         self.assertEqual(len(set(results)), 1)

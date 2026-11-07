@@ -2,7 +2,7 @@
 
 from agenthack import BaseAgent
 
-from .synthesis_service import solve_async
+from .generated_service import solve_async
 
 
 class MyAgent(BaseAgent):

@@ -6,6 +6,7 @@ from contextvars import copy_context
 import time
 
 from . import __version__
+from .capacity_backend import BACKEND
 from .config import load_settings
 from .llm import edit_stages
 from .replay import replay
@@ -88,7 +89,7 @@ def solve_input(task_input, *, use_llm=True, search_budget_s=1.0,
     solution['metrics'] = {'total_time': report['total_time_us'] / 1e6,
                            'round_times': [value / 1e6 for value in report['round_times_us']]}
     return {'answer': {k: v for k, v in solution.items() if k != 'strategy'},
-        'diagnostics': {'version': __version__, 'llm': metadata, 'search': search,
+        'diagnostics': {'version': __version__, 'capacity_backend': BACKEND, 'llm': metadata, 'search': search,
             'local_replay': report, 'phases_s': {k: round(v, 6) for k, v in phases.items()},
             'elapsed_s': time.monotonic() - started}}
 

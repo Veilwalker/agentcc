@@ -13,6 +13,8 @@ import math
 import re
 from collections import OrderedDict
 
+from .capacity_backend import native
+
 
 def bandwidth(value) -> float:
     if isinstance(value, bool):
@@ -115,6 +117,7 @@ class Topology:
         ]
         obj._has_shared_edges = any(obj.edge_resources.values())
         obj._weighted_adjacency = OrderedDict()
+        obj._native_adjacency = {}
         obj._rank_exit_bounds = {}
         obj._rank_incoming = {}
         obj._tie_priorities = {}
@@ -184,11 +187,14 @@ class Topology:
                 self._weighted_adjacency[weight_key][rank_count:] = [
                     [(node, cost) for node, cost in neighbors if node >= rank_count]
                     for neighbors in self._weighted_adjacency[weight_key][rank_count:]]
+                if native is not None and hasattr(native, "shortest_tree"):
+                    self._native_adjacency[weight_key] = native.compile_adjacency(self._weighted_adjacency[weight_key])
                 self._rank_exit_bounds[weight_key] = exits
                 if len(self._weighted_adjacency) > 8:
                     expired, _ = self._weighted_adjacency.popitem(last=False)
                     del self._rank_exit_bounds[expired]
                     del self._rank_incoming[expired]
+                    self._native_adjacency.pop(expired, None)
             self._weighted_adjacency.move_to_end(weight_key)
             adjacency = self._weighted_adjacency[weight_key]
             if (src, dst) in self.edges:
@@ -216,30 +222,34 @@ class Topology:
                     for node in self._node_names[rank_count:]
                 ]
             priority = self._tie_priorities[source]
-            distances[source] = 0.0
-            queue = []
-            push, pop = heapq.heappush, heapq.heappop
-            for neighbor, cost in adjacency[source]:
-                distances[neighbor] = cost
-                ties[neighbor] = priority[neighbor]
-                previous[neighbor] = source
-                if neighbor >= rank_count:
-                    push(queue, (cost, ties[neighbor], neighbor))
-            while queue:
-                cost, tie, node = pop(queue)
-                if cost != distances[node] or tie != ties[node]:
-                    continue
-                for neighbor, weight in adjacency[node]:
-                    next_cost = cost + weight
-                    next_tie = tie + priority[neighbor]
-                    if next_cost < distances[neighbor] or (
-                        next_cost == distances[neighbor] and next_tie < ties[neighbor]
-                    ):
-                        distances[neighbor] = next_cost
-                        ties[neighbor] = next_tie
-                        previous[neighbor] = node
-                        if neighbor >= rank_count:
-                            push(queue, (next_cost, next_tie, neighbor))
+            if weight_key in self._native_adjacency:
+                previous, distances, ties = native.shortest_tree(
+                    self._native_adjacency[weight_key], source, rank_count, priority)
+            else:
+                distances[source] = 0.0
+                queue = []
+                push, pop = heapq.heappush, heapq.heappop
+                for neighbor, cost in adjacency[source]:
+                    distances[neighbor] = cost
+                    ties[neighbor] = priority[neighbor]
+                    previous[neighbor] = source
+                    if neighbor >= rank_count:
+                        push(queue, (cost, ties[neighbor], neighbor))
+                while queue:
+                    cost, tie, node = pop(queue)
+                    if cost != distances[node] or tie != ties[node]:
+                        continue
+                    for neighbor, weight in adjacency[node]:
+                        next_cost = cost + weight
+                        next_tie = tie + priority[neighbor]
+                        if next_cost < distances[neighbor] or (
+                            next_cost == distances[neighbor] and next_tie < ties[neighbor]
+                        ):
+                            distances[neighbor] = next_cost
+                            ties[neighbor] = next_tie
+                            previous[neighbor] = node
+                            if neighbor >= rank_count:
+                                push(queue, (next_cost, next_tie, neighbor))
             # Keep incoming edges with this search state: the weight cache can
             # evict independently while a source tree still has live queries.
             self._paths[key] = (previous, distances, ties, bytearray(rank_count),

@@ -90,7 +90,7 @@ def read_run(path):
 
 def valid_request(row):
     return (row["valid"] and row.get("status") == "success" and row.get("http_status") == 200
-            and type(row.get("calls")) is int and row["calls"] == 1)
+            and type(row.get("calls")) is int and row["calls"] >= 1)
 
 
 def distribution(values):
@@ -249,7 +249,7 @@ HTML = '''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentCC · 本地版本对照</title>
 <style>
 :root{font-family:system-ui,-apple-system,"Segoe UI","Noto Sans SC",sans-serif;color:#1e2d43;background:#f3f6fa;line-height:1.6;color-scheme:light}*{box-sizing:border-box}body{margin:0}main{max-width:1220px;margin:auto;padding:32px 22px}h1{font-size:28px;margin:0 0 10px}h2{font-size:19px;margin:0 0 10px}p{margin-top:0}a{color:#24599e;text-underline-offset:3px}.badge{display:inline-block;background:#e8eef8;border-radius:5px;color:#436184;font-size:12px;padding:3px 8px;margin-bottom:12px}.muted{color:#6a788b;font-size:13px}.nav{display:flex;gap:20px;flex-wrap:wrap;margin:16px 0 24px;font-size:13px}.panel{background:white;border:1px solid #dee5ef;border-radius:12px;padding:22px;margin:18px 0}.controls{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:20px}label{font-size:13px;color:#596c83}select{display:block;margin-top:5px;padding:7px 12px;font:inherit;color:#1e2d43;background:white;border:1px solid #cbd7e5;border-radius:6px;min-width:130px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}.cards>div{background:#f5f8fc;padding:14px;border-radius:8px}.cards span{font-size:12px;color:#6c7b90}.cards strong{display:block;font-size:23px;font-variant-numeric:tabular-nums;margin-top:6px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}th,td{padding:11px 12px;text-align:right;border-bottom:1px solid #e8edf5;font-variant-numeric:tabular-nums}th{font-weight:600;color:#5d7089;background:#f7f9fc;font-size:12px}th:first-child,td:first-child{text-align:left}td small{display:block;color:#7d899c;font-size:11px}.good{color:#137765}.bad{color:#b24836}.neutral{color:#7b8796}ul{padding-left:21px;font-size:13px}li{margin-bottom:7px}footer{font-size:12px;color:#7c889b;margin:20px 0}code{overflow-wrap:anywhere}@media(max-width:700px){main{padding:20px 12px}.panel{padding:16px}.cards{grid-template-columns:1fr}.cards strong{font-size:21px}.controls{gap:12px}}
-</style></head><body><main><span class="badge">本地公开样例，非官方得分</span><h1>版本对照：通信、求解时间与 Token</h1><p class="muted">按相同样例和源码版本聚合重复请求。报告只展示测量值与相对变化，不估算平台分数。</p><nav class="nav"><a href="__BACK__">返回版本看板</a><a href="report.json">完整分析 JSON</a><span>__LINKS__</span></nav>__CONTENT__<footer>离线报告，无外部依赖、无联网请求。有效请求要求 SDK 成功、一次模型调用及独立 Replay 有效。源记录中的失败不会被静默删掉。</footer></main>__SCRIPT__</body></html>'''
+</style></head><body><main><span class="badge">本地公开样例，非官方得分</span><h1>版本对照：通信、求解时间与 Token</h1><p class="muted">按相同样例和源码版本聚合重复请求。报告只展示测量值与相对变化，不估算平台分数。</p><nav class="nav"><a href="__BACK__">返回版本看板</a><a href="report.json">完整分析 JSON</a><span>__LINKS__</span></nav>__CONTENT__<footer>离线报告，无外部依赖、无联网请求。有效请求要求 SDK 成功、至少一次模型调用及独立 Replay 有效。反馈重试的时间、Token 和调用次数全部计入。源记录中的失败不会被静默删掉。</footer></main>__SCRIPT__</body></html>'''
 
 
 SCRIPT = '''<script>

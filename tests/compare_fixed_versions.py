@@ -188,6 +188,8 @@ def version_modules(agent):
 
 
 async def run(versions, samples, recordings, repeat, delays, output, limits):
+    if any((version.source / 'code_policy.py').is_file() for version in versions):
+        raise ValueError('saved JSON edit replies cannot test generated-code versions; use compare_versions')
     import httpx
     from agenthack import AgentRuntime
     from agenthack.telemetry import Telemetry
@@ -345,7 +347,7 @@ def nonnegative_delay(value):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--versions", nargs="+", default=["1.4", "current"])
+    parser.add_argument("--versions", nargs="+", default=["1.4", "1.6"])
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--samples", nargs="+")
     selection.add_argument("--all-public", action="store_true")
@@ -359,6 +361,8 @@ def main(argv=None):
         if len(set(args.delays)) != len(args.delays):
             raise ValueError("delays must be distinct")
         versions = compare.resolve_versions(args.versions)
+        if any((version.source / 'code_policy.py').is_file() for version in versions):
+            raise ValueError('saved JSON edit replies cannot test generated-code versions; use compare_versions')
         samples = compare.load_samples(args.samples, all_public=args.all_public)
         recordings = load_recordings(args.recordings_dir, samples)
         output = compare.check_output(args.output_dir)

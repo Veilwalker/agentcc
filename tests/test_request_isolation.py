@@ -13,6 +13,7 @@ from src.llm import LLMError
 from src.replay import replay
 from src.solver import solve_schedule
 from tests.test_solver import make_case
+from tests.test_generated_solver import FRONTIER_REFERENCE
 
 try:
     from agenthack import AgentRuntime
@@ -48,11 +49,10 @@ class RequestIsolationTests(unittest.TestCase):
         originals = deepcopy([first, second])
         rendezvous = threading.Barrier(2)
 
-        def planner(task, summary, **kwargs):
+        def planner(system, content, settings, **kwargs):
             rendezvous.wait(2)
-            tokens = 11 if task["task_id"] == "first" else 22
-            return ({"bands": [0] * len(summary["bands"])} if "bands" in summary
-                    else {"counts": [0] * len(summary["edits"])}), {
+            tokens = 11 if '"op":"all-gather"' in content else 22
+            return FRONTIER_REFERENCE, {
                 "called": True, "usage": {"prompt_tokens": tokens, "completion_tokens": 3},
             }
 
@@ -73,13 +73,13 @@ class RequestIsolationTests(unittest.TestCase):
                 self.assertTrue(replay(case["task"], case["topology"], result)["valid"])
                 self.assertNotIn("synthetic-key", str(result))
             self.assertNotEqual(data[0]["metadata"]["session_id"], data[1]["metadata"]["session_id"])
-            self.assertNotEqual(data[0]["output"]["diagnostics"]["llm"]["source_input_sha256"],
-                                data[1]["output"]["diagnostics"]["llm"]["source_input_sha256"])
+            self.assertNotEqual(data[0]["output"]["diagnostics"]["search"]["model_edit"]["space"]["input_sha256"],
+                                data[1]["output"]["diagnostics"]["search"]["model_edit"]["space"]["input_sha256"])
 
         with patch("src.llm._chat_completion", side_effect=AssertionError("unit test must not call network")), \
-                patch("src.synthesis_service.load_settings", return_value=SETTINGS), \
-                patch("src.synthesis_service.edit_stages", side_effect=planner), \
-                patch("src.synthesis_service.solve_schedule", side_effect=short_search):
+                patch("src.generated_service.load_settings", return_value=SETTINGS), \
+                patch("src.code_policy._chat_completion", side_effect=planner), \
+                patch("src.generated_service.solve_schedule", side_effect=short_search):
             asyncio.run(check())
         self.assertEqual([first, second], originals)
 
@@ -87,16 +87,16 @@ class RequestIsolationTests(unittest.TestCase):
         from src.my_agent import MyAgent
         first, second = request_case("slow"), request_case("next")
         first["constraints"]["timeout_ms"] = 30
+        second["input"]["task"]["data_size"]["per_rank_bytes"] = 65536
         model_waiting, release_model, model_finished = threading.Event(), threading.Event(), threading.Event()
 
-        def planner(task, summary, **kwargs):
-            if task["task_id"] == "slow":
+        def planner(system, content, settings, **kwargs):
+            if '"bytes":32768' in content:
                 model_waiting.set()
                 if not release_model.wait(3):
                     raise LLMError("synthetic test did not release its model")
                 model_finished.set()
-            return ({"bands": [0] * len(summary["bands"])} if "bands" in summary
-                    else {"counts": [0] * len(summary["edits"])}), {
+            return FRONTIER_REFERENCE, {
                 "called": True, "usage": {"prompt_tokens": 7, "completion_tokens": 2}}
 
         async def check():
@@ -119,9 +119,9 @@ class RequestIsolationTests(unittest.TestCase):
                         await asyncio.to_thread(model_finished.wait, 1)
 
         with patch("src.llm._chat_completion", side_effect=AssertionError("unit test must not call network")), \
-                patch("src.synthesis_service.load_settings", return_value=SETTINGS), \
-                patch("src.synthesis_service.edit_stages", side_effect=planner), \
-                patch("src.synthesis_service.solve_schedule", side_effect=short_search):
+                patch("src.generated_service.load_settings", return_value=SETTINGS), \
+                patch("src.code_policy._chat_completion", side_effect=planner), \
+                patch("src.generated_service.solve_schedule", side_effect=short_search):
             asyncio.run(check())
 
 

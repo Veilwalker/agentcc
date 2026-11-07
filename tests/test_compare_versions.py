@@ -3,7 +3,9 @@
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -99,7 +101,7 @@ class ComparisonTests(unittest.TestCase):
         request = samples[0].request()
         self.assertEqual(request["input"]["task"], samples[0].task)
         self.assertEqual(request["input"]["topology"], samples[0].topology)
-        self.assertEqual(request["constraints"]["timeout_ms"], 180000)
+        self.assertEqual(request["constraints"]["timeout_ms"], 360000)
 
     def test_output_cannot_escape_or_overwrite_a_completed_experiment(self):
         with self.assertRaisesRegex(ValueError, "inside the project"):
@@ -161,6 +163,22 @@ class ComparisonTests(unittest.TestCase):
         (source / "my_agent.py").write_text("class MyAgent: changed = True\n")
         after = compare.source_hashes(versions, project=self.project)
         self.assertNotEqual(before, after)
+
+    def test_release_benchmark_rejects_silent_python_fallback(self):
+        source = self.source("9.91")
+        (source.parent / 'Dockerfile').write_text('ENV AGENTCC_CAPACITY_BACKEND=cpp\n')
+        (source / 'capacity_backend.py').write_text("BACKEND = 'python'\n")
+        version = compare.Version('9.91', source, False)
+        try:
+            with patch.dict(os.environ, {'AGENTCC_CAPACITY_BACKEND': 'python'}):
+                with self.assertRaisesRegex(ValueError, 'requires cpp.*loaded python'):
+                    compare.load_agent(version)
+                # Backend isolation is explicitly allowed only by its runner.
+                self.assertIsNotNone(compare.load_agent(version, enforce_release_backend=False))
+        finally:
+            for name in list(sys.modules):
+                if name.startswith('agentcc_compare_v9_91'):
+                    del sys.modules[name]
 
 
 if __name__ == "__main__":

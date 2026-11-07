@@ -149,7 +149,7 @@ class FixedComparisonTests(unittest.TestCase):
     def test_dry_run_never_loads_configuration_applies_limits_or_creates_output(self):
         output = self.folder / "new-output"
         versions = [compare.Version("1.4", compare.PROJECT / "artifacts/v1.4/source/src", False),
-                    compare.Version(compare.__version__, compare.PROJECT / "src", True)]
+                    compare.Version("1.6", compare.PROJECT / "artifacts/v1.6/source/src", False)]
         with patch.object(compare, "resolve_versions", return_value=versions), \
                 patch.object(compare, "load_samples", return_value=[self.sample]), \
                 patch.object(compare, "check_output", return_value=output), \
@@ -176,7 +176,7 @@ class FixedComparisonTests(unittest.TestCase):
 
     def test_two_small_sdk_versions_preserve_response_and_flag_mismatched_prompt(self):
         """Four 2-rank requests cover rotation, HTTP JSON and SDK trace boundaries."""
-        versions = compare.resolve_versions(["1.4", "current"])
+        versions = compare.resolve_versions(["1.4", "1.6"])
         output = self.folder / "sdk-output"
         recording = self.recording()
         with patch.object(compare, "configure_environment", side_effect=AssertionError("no credentials")), \
@@ -191,7 +191,7 @@ class FixedComparisonTests(unittest.TestCase):
         self.assertEqual(report["blocked_network_attempts"], 0)
         self.assertEqual(report["blocked_configuration_reads"], 0)
         rows = report["rows"]
-        self.assertEqual([row["version"] for row in rows], ["1.4", compare.__version__, compare.__version__, "1.4"])
+        self.assertEqual([row["version"] for row in rows], ["1.4", "1.6", "1.6", "1.4"])
         self.assertEqual(report["summary"]["replay_valid"], 4)
         for row in rows:
             with self.subTest(version=row["version"], repeat=row["repeat"]):

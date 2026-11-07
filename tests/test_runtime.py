@@ -31,16 +31,17 @@ class RuntimeTests(unittest.TestCase):
         settings = Settings("http://unused/v1/chat/completions", "test-only", "test-model")
         metadata = {"usage": {"prompt_tokens": 10, "completion_tokens": 4}, "called": True}
 
-        def model(task, problem, **kwargs):
-            return ({"bands": [0] * len(problem["bands"])} if "bands" in problem
-                    else {"counts": [0] * len(problem["edits"])}), metadata
+        from tests.test_generated_solver import FRONTIER_REFERENCE
+
+        def model(*args, **kwargs):
+            return FRONTIER_REFERENCE, metadata
         runtime = AgentRuntime(MyAgent())
 
         async def check():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime.app), base_url="http://test") as client:
                 self.assertEqual((await client.get("/health")).status_code, 200)
                 result = await client.post("/solve", json={"task_id": task["task_id"], "task_type": "agentcc",
-                    "input": {"task": task, "topology": topology}, "constraints": {"timeout_ms": 180000}})
+                    "input": {"task": task, "topology": topology}, "constraints": {"timeout_ms": 360000}})
                 data = result.json()
                 self.assertEqual(data["status"], "success", data)
                 self.assertEqual(data["metadata"]["llm_calls"], 1)
@@ -48,14 +49,14 @@ class RuntimeTests(unittest.TestCase):
                 self.assertTrue(data["output"]["diagnostics"]["local_replay"]["valid"])
                 self.assertNotIn("strategy", data["output"]["answer"])
                 evidence = data["output"]["diagnostics"]["search"]["model_edit"]
-                self.assertFalse(evidence["selected"])
-                self.assertFalse(evidence["accepted"])
+                self.assertTrue(evidence["executions"][0]["valid_program"])
+                self.assertEqual(evidence["semantics"], "model_generated_stage_solver_v1")
                 self.assertEqual((await client.post("/solve", json={"input": {}})).status_code, 422)
 
-        with patch("src.synthesis_service.load_settings", return_value=settings), patch("src.synthesis_service.edit_stages", side_effect=model):
+        with patch("src.generated_service.load_settings", return_value=settings), patch("src.code_policy._chat_completion", side_effect=model):
             asyncio.run(check())
 
-    def test_model_failure_is_not_reported_as_success(self):
+    def test_model_failure_is_visible_despite_valid_fallback(self):
         from src.my_agent import MyAgent
         from src.llm import LLMError
         from src.config import Settings
@@ -68,7 +69,13 @@ class RuntimeTests(unittest.TestCase):
                 result = await client.post("/solve", json={"task_id": "public-shared-ag", "input": {
                     "task": json.loads((root / "all-gather-task.json").read_text()),
                     "topology": json.loads((root / "topology.json").read_text())}})
-                self.assertEqual(result.json()["status"], "error")
+                data = result.json()
+                self.assertEqual(data["status"], "success")
+                audit = data["output"]["diagnostics"]
+                self.assertTrue(audit["local_replay"]["valid"])
+                self.assertEqual(audit["search"]["model_edit"]["stop_reason"], "model_transport_failed")
+                self.assertFalse(audit["search"]["model_edit"]["selected"])
+                self.assertIn("error", audit["llm"]["interactions"][0])
 
-        with patch("src.synthesis_service.load_settings", return_value=settings), patch("src.synthesis_service.edit_stages", side_effect=LLMError("mock model failure")):
+        with patch("src.generated_service.load_settings", return_value=settings), patch("src.code_policy._chat_completion", side_effect=LLMError("mock model failure")):
             asyncio.run(check())

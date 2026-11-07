@@ -103,7 +103,10 @@ class RoutingV11Tests(unittest.TestCase):
         def tracked_push(queue, item):
             pushes.append(item[2])
             return original_push(queue, item)
-        with patch("src.topology.heapq.heappush", side_effect=tracked_push):
+        # Instrument the Python reference heap; native routing is checked
+        # separately against this reference in test_native_routing.py.
+        with patch("src.topology.native", None), \
+             patch("src.topology.heapq.heappush", side_effect=tracked_push):
             graph.path("r0", "r1")
         self.assertTrue(pushes)
         self.assertTrue(all(index >= graph._rank_count for index in pushes))
