@@ -1,15 +1,9 @@
 {
   "version": "1.5",
-  "revision": "05",
-  "created_at_utc": "2026-11-04T17:23:26.278562+00:00",
-  "note": "Exact delivered source, tests and project documentation. Run from project root with materials/vendor; credentials and dependencies excluded. Prior revision preserved at artifacts/v1.5/iterations/04/source. Main measured reference: v1.4.",
   "sha256": {
     ".dockerignore": "3f8890ea75ee14ce839164256d411822e34341f4d7e93f6fd9f15047e6a29754",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     "Dockerfile": "0ce6d2b249ae42e0ada0f58257e8c251a591cb9656733a910f9095dcf837942e",
-    "README.md": "791a43e2e5191c887ec15b9733da52dc1d083b172b73b583b6eec18c5bdc55b7",
-    "THEORY.md": "f298f85d12193e0741e3eaca8a1a27b6d0c5c60c0108a99aa290cb48928c6108",
-    "VALIDATION.md": "1da1c796fd7f4251127201fd48df36e78078572c15fa241f6801ca4d95928f54",
     "src/__init__.py": "eefaa5a376149c64d3277c0c72cbe04c4a2416f8fe36d6eb2e0ae7ab74b81d28",
     "src/cli.py": "a061dd04890534bf64b97d988e85459d24cdb513dc040b501f8b4ac6d14f198b",
     "src/collectives.py": "4bcc718ef2abde5236b085d5e384a2f9a1cda6f69d82d43376d9b00139e65af6",

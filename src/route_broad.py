@@ -11,7 +11,7 @@ from collections import defaultdict
 import math
 import time
 
-from .replay import replay
+from .replay import certify as replay
 from .route_balance import _PathCosts, _RoundLoad
 from .route_work import RouteWorkBudget, RouteWorkMeter
 from .schedule_edit import _avoiding_path, _legal_path

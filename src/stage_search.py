@@ -62,10 +62,17 @@ class Profile:
 
     def compile(self, widths):
         space = self.plain
-        validate_widths(widths, space.dimensions, space.max_width)
+        sketches = getattr(self, "gather_arcs", {})
+        max_width = max((w for _, w in sketches), default=0)
+        validate_widths(widths, space.dimensions, max(space.max_width, max_width))
         answer = _initial(space.task, list(space.graph.ranks), space.split)
         forward, backward, first = [], [], 0
         for w in widths:
+            sketch = sketches.get((first, w))
+            if sketch is not None:
+                forward.extend(sketch.compile())
+                first += w
+                continue
             self.transition(first, w)
             chosen = self.selected[first, w, None]
             plans, copies, _cost = chosen.transition(first, w)
@@ -85,6 +92,11 @@ class Profile:
         space, rounds, position = self.plain, [], 0
         d = space.dimensions
         for w in widths:
+            meeting = getattr(self, 'meetings', {}).get((position, w))
+            if meeting is not None:
+                rounds.append(meeting.compile())
+                position += w
+                continue
             phase = 0 if position < d else 1
             i = position if phase == 0 else 2*d-position-w
             self.transition(i,w,phase)
@@ -138,7 +150,7 @@ class SearchSpace:
         p, widths = output
         if isinstance(widths, tuple):
             widths = list(widths)
-        validate_widths(widths, self.dimensions, self.profiles[p].plain.max_width)
+        validate_widths(widths, self.dimensions, max(map(len, self.costs[p])))
         if len(widths)>self.limit:
             raise ValueError('program exceeds stage limit')
         first, cost = 0, 0.0
@@ -165,6 +177,29 @@ class SearchSpace:
                         dp[key] = min(dp.get(key,math.inf),dp[i,k]+c)
             optimum = min(optimum, *(dp.get((self.dimensions,k),math.inf) for k in range(1,self.limit+1)))
         return optimum
+
+    def best_legal_path(self):
+        """Recover a budget-feasible local path only when the model proposal fails."""
+        choices = []
+        for profile, table in enumerate(self.costs):
+            frontier = {(0, 0): (0.0, ())}
+            for node, row in enumerate(table):
+                for steps in range(self.limit):
+                    state = frontier.get((node, steps))
+                    if state is None:
+                        continue
+                    cost, path = state
+                    for width, duration in enumerate(row, 1):
+                        key = node + width, steps + 1
+                        value = cost + duration, path + (width,)
+                        if key not in frontier or value < frontier[key]:
+                            frontier[key] = value
+            choices.extend((cost, profile, path) for (node, _), (cost, path)
+                           in frontier.items() if node == self.dimensions and math.isfinite(cost))
+        if not choices:
+            return None
+        _, profile, path = min(choices)
+        return [profile, list(path)]
 
     def compile(self, output):
         if _input_digest(self.task,self.graph)!=self.input_hash:

@@ -6,10 +6,13 @@ already owns the identical atom set. No topology name participates in a choice.
 """
 from .balanced_stages import BalancedStageSpace
 from .holder_stages import HolderStageSpace
+from .meeting_stage import MeetingStage
+from .group_sketch import add_gather_sketches, offer_group_broadcast
 from .collectives import locality_order
+from .cohort_pipeline import pipeline
 from .fabric_routes import RouteCatalog
 from .schedule_edit import _input_digest
-from .stage_program import StageSpace
+from .stage_program import StageSpace, PlainPlan
 from .stage_search import SearchSpace, Profile
 
 
@@ -17,6 +20,9 @@ class RefinedProfile(Profile):
     def __init__(self, plain, balanced, holders=None):
         super().__init__(plain, balanced, {})
         self.holders = holders
+        self.meetings = {}
+        self.gather_arcs = {}
+        self.narrow_access = max(len(plain.catalog.outgoing[r]) for r in plain.order) <= 2
         balanced.movement_counts = plain.movement_counts
         if holders is not None:
             holders.movement_counts = plain.movement_counts
@@ -26,7 +32,10 @@ class RefinedProfile(Profile):
         if key not in self.selected:
             variants = [self.plain]
             old = self.plain.transition(i, w)
-            if any(row[4] > 1 for rows in old[:2] for row in rows):
+            if (any(rows.multiple_atoms if isinstance(rows, PlainPlan) else any(row[4] > 1 for row in rows) for rows in old[:2])
+                    or (self.narrow_access and self.plain.task['operator'] == 'all-reduce' and i >= 2
+                        and any(len(self.plain.options[row[1], row[2]]) > 1
+                                for row in old[0]))):
                 variants.append(self.striped)
             if self.holders is not None and i >= 3 and w == 1:
                 variants.append(self.holders)
@@ -47,7 +56,7 @@ class RefinedSearchSpace(SearchSpace):
         self.independent_ar = task['operator'] == 'all-reduce'
         self.dimensions = d * (2 if self.independent_ar else 1)
         self.limit = min(self.dimensions, task['max_nonempty_rounds'])
-        catalog = RouteCatalog(graph, task['data_size']['per_rank_bytes']//split, branch_ports=True)
+        catalog = RouteCatalog(graph, task['data_size']['per_rank_bytes']//split, branch_ports=True, deep_exits=self.independent_ar)
         orders = [list(graph.ranks)]
         local = locality_order(graph)
         if local != orders[0]:
@@ -79,15 +88,47 @@ class RefinedSearchSpace(SearchSpace):
                             break
                         costs.append(p.phase_cost(first,w,1))
                     backward.append(costs)
+                # A bridge goes directly from several disjoint partials to
+                # multiple complete roots. Width still counts consumed logical
+                # dimensions; every arc compiles into one real communication round.
+                for remaining in range(1, min(3, d) + 1):
+                    first = d - remaining
+                    if len(forward[first]) != remaining:
+                        continue
+                    for copies in range(1, min(remaining, width - remaining) + 1):
+                        try:
+                            stage = MeetingStage(p.striped, first, copies)
+                        except ValueError:
+                            break  # ragged rows contain only available widths
+                        span = remaining + copies
+                        p.meetings[first, span] = stage
+                        forward[first].append(stage.cost)
                 self.costs.append(forward + backward)
             else:
                 self.costs.append([[p.transition(i,w)[2] for w in range(1,min(width,d-i)+1)]
                                    for i in range(d)])
+                add_gather_sketches(p, self.costs[-1], self.limit)
+        if not self.independent_ar:
+            offer_group_broadcast(self)
+
+    def compile(self, output):
+        candidate, predicted = super().compile(output)
+        if not self.independent_ar:
+            plain = self.profiles[output[0]].plain
+            candidate, total = pipeline(candidate, predicted, plain, self.task['max_nonempty_rounds'])
+            self.timing_sketch = {'before_us': predicted, 'after_us': total,
+                                  'applied': total < predicted, 'rounds': candidate['round_count']}
+            return candidate, total
+        return candidate, predicted
 
     def evidence(self):
         result = super().evidence()
+        if hasattr(self, 'timing_sketch'):
+            result['cohort_pipeline'] = self.timing_sketch
         for metadata, profile in zip(result['profiles'],self.profiles):
             metadata['holder_transitions'] = [list(k) for k,s in profile.selected.items()
                                                if s is profile.holders]
+            metadata['gather_sketches'] = [[*key, type(value).__name__] for key,value in profile.gather_arcs.items()]
+            metadata['multi_root_arcs'] = [list(key) for key in profile.meetings]
             metadata['routing_audit'] = profile.striped.routing_audit
         return result

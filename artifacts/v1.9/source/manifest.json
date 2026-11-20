@@ -1,15 +1,9 @@
 {
   "version": "1.9",
-  "created_at_utc": "2026-11-06T14:00:16.981856+00:00",
-  "note": "1.6 scheduling semantics plus C++ numerical backend; no credentials, compiled binaries or instance answers.",
   "sha256": {
     ".dockerignore": "a61d520b6741aadb2be57422118b93125328d96ff379436d9dc9fc31b92689ef",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     "Dockerfile": "9fb5ec9ddf1db083cbc5eceb4b41d5886d067d3d83352da573a919074d67d318",
-    "README.md": "6ee997c080b4152c36710a50c2007ed190db35ad6eedc1b53c4eb433b53c18dc",
-    "SNAPSHOT.md": "b7c7de09a91010e11dd7fd0c8061681072ac06568ecd3a7f009b771324ec71e2",
-    "THEORY.md": "1b5f997a9e23de9e59c7008f2cc15f2148d66c5bfc73d1f0cd8768d9723f9865",
-    "VALIDATION.md": "3df206303da182b1f37f7f46ff2e94181c7e7d59a4f5ebf4ed1884c2bdafe00f",
     "native/build.py": "1ff4dbded533baf85bd38caee2b56a37682e25e2f6180f70f76cc06e85aa0ea5",
     "native/capacity.cpp": "472c4eab0779e312502721e1f5212d2322ffadec7f3576c1fd906ccf598c7601",
     "src/__init__.py": "0a937ede247938c05ddbfeeffc1d4fe69a7b28f5e5f95b6eb41cb8a8307e07a4",

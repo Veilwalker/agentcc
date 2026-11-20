@@ -1,15 +1,9 @@
 {
   "version": "1.11",
-  "created_at_utc": "2026-11-06T19:20:07.154279+00:00",
-  "note": "保持1.6的调度流程，C++容量和最短路径计算。 No credentials, native binaries, material or answer archives.",
   "sha256": {
     ".dockerignore": "a61d520b6741aadb2be57422118b93125328d96ff379436d9dc9fc31b92689ef",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     "Dockerfile": "9fb5ec9ddf1db083cbc5eceb4b41d5886d067d3d83352da573a919074d67d318",
-    "README.md": "971ba9cba399d8b6267e02abbd7956a89d396396f1677a6b61224a93c4c742d7",
-    "SNAPSHOT.md": "609bf145d6561be4d340ee49a525d9d091c787529c45588d810e334819934cb3",
-    "THEORY.md": "de1dd859f9007562a8692aa4b380db9d1124f857b29e4ecb4bf9d9ca7076c870",
-    "VALIDATION.md": "dadea7f8ee6b909045ead71dae9b09adf01b2c609032d71a74d574479c14d1e5",
     "native/build.py": "1ff4dbded533baf85bd38caee2b56a37682e25e2f6180f70f76cc06e85aa0ea5",
     "native/capacity.cpp": "0c92c6ed917b326e952bc7e895c58c345cea7b040e257f30e8670a336eea4238",
     "native/round_optimizer.h": "74de4090d583abae080c54498c7d2ab76677f989f55894936567254e237c23f7",
@@ -129,6 +123,5 @@
     "tests/test_topology.py": "ac44db449258f8f4aee88e80cbeae94c02da6d185f29718e80cd7fcb6686eab4",
     "tests/test_topology_stress.py": "7a2c0f395d0e242d53a2cd29739b2e25658b54aa3d1dff56aed63ffd58f782e8",
     "tests/test_transfer_partition.py": "70197ac4836d8c81ffc021d832bbea198b941a6843a91208b01ac7cb1608c34c"
-  },
-  "finalized_at_utc": "2026-11-06T19:35:24.944157+00:00"
+  }
 }

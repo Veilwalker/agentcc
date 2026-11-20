@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+cd -- "$(dirname -- "$0")"
 
 # 创建并在后台运行基础开发容器。
 docker run -dit \
     --name agentcc-dev \
-    -v /home/czy/agentcc:/app \
+    -v "$PWD:/app" \
     -w /app \
     -p 8080:8080 \
     agenthack/base:1.1.1 \

@@ -3,7 +3,7 @@ from collections import defaultdict
 import math
 
 from .fabric_routes import CapacityAssignment
-from .stage_program import StageSpace
+from .stage_program import StageSpace, PacketPlan
 
 
 class StripedStageSpace(StageSpace):
@@ -45,6 +45,8 @@ class StripedStageSpace(StageSpace):
     def _materialize(plans, movements):
         rows, consumed = [], defaultdict(int)
         for action, source, destination, path, start, end, step in plans:
+            if hasattr(plans, "packet_width"):
+                step = plans.packet_width(path, end - start, step)
             key = action, source, destination
             atoms = movements[key]
             if start != consumed[key] or not start < end <= len(atoms):

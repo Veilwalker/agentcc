@@ -21,3 +21,12 @@ class SeedPreview(StageSpace):
 
     def binary_cost(self):
         return sum(self.transition(i, 1)[2] for i in range(self.dimensions))
+
+    def screen(self, threshold):
+        """A prefix of nonnegative binary stage costs proves the skip decision."""
+        total = 0.0
+        for first in reversed(range(self.dimensions)):
+            total += self.transition(first, 1)[2]
+            if total >= threshold and first:
+                return total, False
+        return total, True

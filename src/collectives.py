@@ -11,6 +11,9 @@ import math
 import time
 
 
+from .capacity_backend import native
+
+
 def locality_order(graph) -> list[str]:
     """Build a balanced rank hierarchy from actual two-way link affinities.
 
@@ -24,16 +27,23 @@ def locality_order(graph) -> list[str]:
     if n < 2 or n & (n - 1):
         return ranks
     index = {rank: i for i, rank in enumerate(ranks)}
-    affinity = [[0.0] * n for _ in range(n)]
+    direct = []
     switch_members = defaultdict(dict)
     for (src, dst), capacity in graph.edges.items():
         if src in index and dst in index:
             backward = graph.edges.get((dst, src), 0.0)
-            affinity[index[src]][index[dst]] += min(capacity, backward)
+            if backward:
+                direct.append((index[src], index[dst], min(capacity, backward)))
         elif src in index and dst in graph.switches:
             backward = graph.edges.get((dst, src), 0.0)
             if backward:
                 switch_members[dst][index[src]] = min(capacity, backward)
+    if native is not None and n <= 512 and hasattr(native, "locality_permutation"):
+        order = native.locality_permutation(n, direct, [list(m.items()) for m in switch_members.values()])
+        return [ranks[i] for i in order]
+    affinity = [[0.0] * n for _ in range(n)]
+    for i, j, capacity in direct:
+        affinity[i][j] += capacity
     for members in switch_members.values():
         entries = list(members.items())
         divisor = max(1, len(entries) - 1)

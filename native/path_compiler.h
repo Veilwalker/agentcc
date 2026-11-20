@@ -9,9 +9,11 @@ struct CapacityGraph {
     PyObject* nodes = PyDict_New();
     std::unordered_map<uint64_t, CapacityEdge> edges;
     std::vector<std::pair<Py_ssize_t, double>> pools;
+    std::vector<std::array<PyObject*,4>> pool_terms;
     double startup = 0, switching = 0;
     ~CapacityGraph() {
         for (auto& edge : edges) Py_DECREF(edge.second.term);
+        for (auto& row : pool_terms) for (auto* term : row) Py_XDECREF(term);
         Py_XDECREF(nodes);
     }
 };
@@ -82,6 +84,7 @@ PyObject* make_capacity_graph(PyObject*, PyObject* args) {
             graph->pools.emplace_back(index, capacity);
         }
         position = 0;
+        graph->pool_terms.resize(graph->pools.size(), {});
         while (PyDict_Next(edges, &position, &key, &value)) {
             if (!PyTuple_Check(key) || PyTuple_GET_SIZE(key) != 2) {
                 PyErr_SetString(PyExc_ValueError, "edge must have two endpoints"); return nullptr;
@@ -121,11 +124,7 @@ PyObject* make_capacity_graph(PyObject*, PyObject* args) {
     } catch (const std::bad_alloc&) { return PyErr_NoMemory(); }
 }
 
-PyObject* compile_cached_path(PyObject*, PyObject* args) {
-    PyObject *capsule, *path;
-    if (!PyArg_ParseTuple(args, "OO", &capsule, &path)) return nullptr;
-    auto* graph = static_cast<CapacityGraph*>(PyCapsule_GetPointer(capsule, capacity_graph_name));
-    if (!graph) return nullptr;
+PyObject* compile_one(CapacityGraph* graph, PyObject* path) {
     if (!PyTuple_Check(path) || PyTuple_GET_SIZE(path) < 2 || PyTuple_GET_SIZE(path) > 100000) {
         PyErr_SetString(PyExc_ValueError, "invalid capacity path"); return nullptr;
     }
@@ -164,10 +163,86 @@ PyObject* compile_cached_path(PyObject*, PyObject* args) {
         }
         for (const auto& pool : pools) {
             const auto& spec = graph->pools[pool.first];
-            PyObject* term = Py_BuildValue("nd", spec.first, pool.second * 1e6 / spec.second);
+            // The scaled rate of a pool is shared by paths with equal incidence.
+            PyObject* term;
+            if (pool.second<=4) {
+                auto& cached = graph->pool_terms[pool.first][pool.second-1];
+                if (!cached) cached=Py_BuildValue("nd",spec.first,pool.second*1e6/spec.second);
+                term=Py_XNewRef(cached);
+            } else term=Py_BuildValue("nd",spec.first,pool.second*1e6/spec.second);
             if (!term) return nullptr;
             PyTuple_SET_ITEM(terms.p, position++, term);
         }
         return Py_BuildValue("OddO", terms.p, graph->startup + (n - 2) * graph->switching, serial, path);
     } catch (const std::bad_alloc&) { return PyErr_NoMemory(); }
+}
+
+PyObject* compile_cached_path(PyObject*, PyObject* args) {
+    PyObject *capsule, *path;
+    if (!PyArg_ParseTuple(args, "OO", &capsule, &path)) return nullptr;
+    auto* graph = static_cast<CapacityGraph*>(PyCapsule_GetPointer(capsule, capacity_graph_name));
+    if (!graph) return nullptr;
+    return compile_one(graph,path);
+}
+
+// Traverse stage packets once. The Python route catalog defines all option and
+// packet ordering, and both caches are shared with subsequent materialization.
+PyObject* stage_route_jobs(PyObject*, PyObject* args) {
+    PyObject *cap, *entries, *pairs, *paths, *catalog;
+    if (!PyArg_ParseTuple(args,"OO!O!O!O",&cap,&PyList_Type,&entries,&PyDict_Type,&pairs,
+                          &PyDict_Type,&paths,&catalog)) return nullptr;
+    auto* graph = static_cast<CapacityGraph*>(PyCapsule_GetPointer(cap, capacity_graph_name));
+    if (!graph || !PyCallable_Check(catalog)) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_TypeError,"expected a route catalog");
+        return nullptr;
+    }
+    Owned jobs(PyList_New(PyList_GET_SIZE(entries)));
+    if (!jobs.p) return nullptr;
+    for (Py_ssize_t i=0; i<PyList_GET_SIZE(entries); ++i) {
+        Owned row(PySequence_Fast(PyList_GET_ITEM(entries,i),"invalid stage entry"));
+        if (!row.p) return nullptr;
+        if (PySequence_Fast_GET_SIZE(row.p)!=2) {
+            PyErr_SetString(PyExc_ValueError,"invalid stage entry"); return nullptr;
+        }
+        PyObject* count=PySequence_Fast_GET_ITEM(row.p,1);
+        Owned key(PySequence_Fast(PySequence_Fast_GET_ITEM(row.p,0),"invalid stage movement"));
+        if (!key.p) return nullptr;
+        if (PySequence_Fast_GET_SIZE(key.p)!=3) {
+            PyErr_SetString(PyExc_ValueError,"invalid stage movement"); return nullptr;
+        }
+        PyObject* source=PySequence_Fast_GET_ITEM(key.p,1);
+        PyObject* destination=PySequence_Fast_GET_ITEM(key.p,2);
+        Owned pair(PyTuple_Pack(2,source,destination));
+        if (!pair.p) return nullptr;
+        PyObject* options = PyDict_GetItemWithError(pairs,pair.p);
+        if (!options) {
+            if (PyErr_Occurred()) return nullptr;
+            Owned raw(PyObject_CallObject(catalog,pair.p));
+            if (!raw.p) return nullptr;
+            Owned seq(PySequence_Fast(raw.p,"invalid route options"));
+            if (!seq.p) return nullptr;
+            Owned compiled(PyTuple_New(PySequence_Fast_GET_SIZE(seq.p)));
+            if (!compiled.p) return nullptr;
+            for (Py_ssize_t j=0; j<PySequence_Fast_GET_SIZE(seq.p); ++j) {
+                PyObject* element = PySequence_Fast_GET_ITEM(seq.p,j);
+                Owned path(PyTuple_CheckExact(element) ? Py_NewRef(element) : PySequence_Tuple(element));
+                if (!path.p) return nullptr;
+                PyObject* hit = PyDict_GetItemWithError(paths,path.p);
+                if (hit) {
+                    PyTuple_SET_ITEM(compiled.p,j,Py_NewRef(hit));
+                } else {
+                    if (PyErr_Occurred()) return nullptr;
+                    Owned fresh(compile_one(graph,path.p));
+                    if (!fresh.p || PyDict_SetItem(paths,path.p,fresh.p)<0) return nullptr;
+                    PyTuple_SET_ITEM(compiled.p,j,fresh.release());
+                }
+            }
+            if (PyDict_SetItem(pairs,pair.p,compiled.p)<0) return nullptr;
+            options=compiled.p;
+        }
+        PyObject* job=PyTuple_Pack(2,options,count);
+        if (!job) return nullptr;
+        PyList_SET_ITEM(jobs.p,i,job);
+    }
+    return jobs.release();
 }

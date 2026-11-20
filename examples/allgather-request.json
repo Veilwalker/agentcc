@@ -1,0 +1,86 @@
+{
+  "task_id": "shared-demo",
+  "task_type": "agentcc",
+  "input": {
+    "task": {
+      "task_id": "shared-demo",
+      "instance_id": "shared-demo",
+      "operator": "all-gather",
+      "ranks": [
+        "r0",
+        "r1"
+      ],
+      "data_size": {
+        "per_rank_bytes": 32768
+      },
+      "split_policy": {
+        "candidates": [
+          1,
+          2
+        ],
+        "alignment_bytes": 4096
+      },
+      "split": 1,
+      "max_nonempty_rounds": 4,
+      "allow_copy": true
+    },
+    "topology": {
+      "ranks": [
+        "r0",
+        "r1"
+      ],
+      "switches": [
+        "S0"
+      ],
+      "communication_startup_time_us": 1,
+      "switch_processing_overhead_us": 0.3,
+      "edges": [
+        {
+          "src": "r0",
+          "dst": "S0",
+          "bw": "1GB/s",
+          "bidirectional": true
+        },
+        {
+          "src": "r1",
+          "dst": "S0",
+          "bw": "2GB/s",
+          "bidirectional": true
+        }
+      ],
+      "resources": [
+        {
+          "id": "ingress",
+          "capacity": "1GB/s",
+          "edges": [
+            {
+              "src": "r0",
+              "dst": "S0"
+            },
+            {
+              "src": "r1",
+              "dst": "S0"
+            }
+          ]
+        },
+        {
+          "id": "egress",
+          "capacity": "1GB/s",
+          "edges": [
+            {
+              "src": "S0",
+              "dst": "r0"
+            },
+            {
+              "src": "S0",
+              "dst": "r1"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "constraints": {
+    "timeout_ms": 360000
+  }
+}

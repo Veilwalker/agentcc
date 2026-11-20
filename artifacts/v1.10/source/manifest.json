@@ -1,15 +1,9 @@
 {
   "version": "1.10",
-  "created_at_utc": "2026-11-06T16:12:05.309023+00:00",
-  "note": "C++ capacity and round-load kernels, model-generated stage recurrence, complete SDK/Replay validation; no credentials or native binaries.",
   "sha256": {
     ".dockerignore": "a61d520b6741aadb2be57422118b93125328d96ff379436d9dc9fc31b92689ef",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     "Dockerfile": "9fb5ec9ddf1db083cbc5eceb4b41d5886d067d3d83352da573a919074d67d318",
-    "README.md": "85de6068ac0bb0db1bc690e3c73225f3f45c530d43239b9e08059a9ce014a637",
-    "SNAPSHOT.md": "24201eb800590dd34f24320e9c9d8bd91b7f32422bc3e686d83dcef0ba36f8af",
-    "THEORY.md": "e98b5cfec1a6755bda43493e72d6daf010a2698361f3239b215e2d74ff59c20f",
-    "VALIDATION.md": "e23ca638bc79a08144053a3a88a0aa9a6e8221126594be5b736f830db1ca2047",
     "native/build.py": "1ff4dbded533baf85bd38caee2b56a37682e25e2f6180f70f76cc06e85aa0ea5",
     "native/capacity.cpp": "9eeff7cd6d1d8100800895c6a27a8d03c5adc93da83445d5d8979dbfbfa17ca8",
     "native/round_optimizer.h": "74de4090d583abae080c54498c7d2ab76677f989f55894936567254e237c23f7",

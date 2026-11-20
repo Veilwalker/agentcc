@@ -157,7 +157,7 @@ async def run(args):
     report.update(summary(report))
     compare.write_json(output / 'summary.json', report)
     matched = report['all_prompts_equal'] or args.allow_prompt_change
-    return 0 if report['complete'] and report['source_unchanged'] and report['all_schedules_equal'] and matched else 1
+    return 0 if report['complete'] and report['source_unchanged'] and (args.compare_quality or report['all_schedules_equal']) and matched else 1
 
 
 if __name__ == '__main__':
@@ -171,6 +171,8 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', default='artifacts/v1.8/runs/fixed-model')
     parser.add_argument('--allow-prompt-change', action='store_true',
                         help='Report changed prompts without rejecting an otherwise identical fixed-reply schedule')
+    parser.add_argument('--compare-quality', action='store_true',
+                        help='Allow different valid schedules when comparing optimization algorithms')
     args = parser.parse_args()
     if args.repeat < 1 or any(not 0 <= delay <= 60 for delay in args.delays):
         parser.error('positive repeat count and finite delays between 0 and 60 required')

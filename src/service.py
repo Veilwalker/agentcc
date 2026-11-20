@@ -20,7 +20,7 @@ from . import __version__
 from .llm import edit_schedule
 from .postprocess import polish, compare_with_control
 from .provenance import build_model_ledger, observe_model_ledger
-from .replay import replay
+from .replay import certify as replay
 from .route_balance import refine
 from .route_broad import refine_broad
 from .route_work import RouteWorkBudget

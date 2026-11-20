@@ -1,16 +1,10 @@
 {
   "version": "1.12",
-  "created_at_utc": "2026-11-06T19:20:07.340787+00:00",
-  "note": "LLM生成受约束的搜索代码，C++容量图复用和最短路径内核，按需展开。 No credentials, native binaries, material or answer archives.",
   "sha256": {
     ".dockerignore": "a61d520b6741aadb2be57422118b93125328d96ff379436d9dc9fc31b92689ef",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     ".gitignore": "2012a89a8466b02c8d595639591b0bacd99ac00fc076800003b200acc206c932",
     "Dockerfile": "9fb5ec9ddf1db083cbc5eceb4b41d5886d067d3d83352da573a919074d67d318",
-    "README.md": "0c37d0c7fd594107989925c8b7570b3f881ca4be1c6c63e79097965906df1a83",
-    "SNAPSHOT.md": "98bf462c695d7183a3a26622dcfbab42b2524312de7ce3a3bb4d7933c37c0776",
-    "THEORY.md": "33613e5d382a26bd959f834d745ab75419c7097654f81ac9f628b1f4961b56f0",
-    "VALIDATION.md": "64e72783b3fefe07636066ba3f58676619b77e1fe078688489f785e20d47934d",
     "native/build.py": "1ff4dbded533baf85bd38caee2b56a37682e25e2f6180f70f76cc06e85aa0ea5",
     "native/capacity.cpp": "ed8669fe864177329c08dfccd0fb8a601a180b97abc2ddd637ea52f04869b997",
     "native/path_compiler.h": "0c7107542dae84161be01c28145ea7e0a0d5d795bbba928c20183ded80b9bdd9",
@@ -54,7 +48,7 @@
     "src/striped_stages.py": "2ead15c27b0f8c9e0fc3dbed06b55289ae02eee4bad72e15528a179043e3fd29",
     "src/synthesis_service.py": "db0447dcb61a2aedd91bd1f08b7d08e5b06cece1cfd49112cad1535d17dce0b5",
     "src/topology.py": "1fa32193cf58246ee869571b7368381bb41ed36637fd92efbdd30e82ce80b53b",
-    "start-dev.sh": "8c4743764736827c2d28ab3c03d1560661cd913b6056bf58af64624a6b3f8694",
+    "start-dev.sh": "ac9a7c6d118a71a6abe8967ff05783b7335ab9613c289c6763b5b1543107d18e",
     "tests/__init__.py": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
     "tests/backend_audit.py": "08dbc6ae343f8ef93e4f6e7dd331920dfe0d47dbebf088c3bcf03aa3c39fbf3e",
     "tests/benchmark_edit_work.py": "08e0cfc04b801e38fab2acc55e305c38abbcaff646c63cfcacda00200943d30d",
@@ -154,6 +148,5 @@
     "tests/test_topology.py": "ac44db449258f8f4aee88e80cbeae94c02da6d185f29718e80cd7fcb6686eab4",
     "tests/test_topology_stress.py": "7a2c0f395d0e242d53a2cd29739b2e25658b54aa3d1dff56aed63ffd58f782e8",
     "tests/test_transfer_partition.py": "70197ac4836d8c81ffc021d832bbea198b941a6843a91208b01ac7cb1608c34c"
-  },
-  "finalized_at_utc": "2026-11-06T19:35:24.944157+00:00"
+  }
 }

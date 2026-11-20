@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 #include <set>
+#include <map>
 #include <stdexcept>
 #include <vector>
 #include <unordered_map>
@@ -14,6 +15,7 @@
 #include <limits>
 #include <queue>
 #include <tuple>
+#include <string_view>
 
 namespace {
 struct Owned {
@@ -206,15 +208,57 @@ PyObject* assignment_time(PyObject*, PyObject* capsule) {
 }
 
 #include "round_optimizer.h"
+#include "wave_costs.h"
+#include "dependency_schedule.h"
+#include "round_slack.h"
+#include "tree_offsets.h"
 #include "shortest_paths.h"
+#include "lazy_paths.h"
+#include "trace_profile.h"
 #include "path_compiler.h"
+#include "aggregate_packets.h"
+#include "gather_emit.h"
+#include "launch_emit.h"
+#include "locality.h"
+#include "gather_replay.h"
+#include "congestion_routes.h"
+#include "domain_cycles.h"
+#include "cycle_relays.h"
+#include "local_tail.h"
+#include "relay_exchange.h"
 
 PyMethodDef methods[] = {
+    {"exchange_relays", flow_routes::exchange, METH_VARARGS, "Search physical placements of reduction subtrees."},
+    {"adaptive_routes", flow_routes::run, METH_VARARGS, "Generate paths from current congestion prices."},
+    {"verify_canonical_reduce", gather_replay::canonical_reduce, METH_VARARGS, "Verify reduction with indexed original atoms."},
+    {"verify_reduce", gather_replay::run, METH_VARARGS, "Verify actual reduction transfers and round-start ownership."},
+    {"verify_gather", gather_replay::run, METH_VARARGS, "Independent verification of actual AllGather transfers."},
+    {"locality_permutation", locality_permutation, METH_VARARGS, "Build a balanced rank hierarchy."},
     {"make_capacity_graph", make_capacity_graph, METH_VARARGS, "Compile request-local edge and pool coefficients."},
+    {"emit_paced_launches",launch_emit::paced,METH_VARARGS,"Materialize selected per-owner shard launches."},
+    {"emit_shifted_trees",launch_emit::shifted,METH_VARARGS,"Materialize selected whole-tree launches."},
+    {"emit_gather_shards",gather_emit::materialize,METH_VARARGS,"Expand whole shard launches from a declared tree."},
+    {"aggregate_gather_packets",aggregate_packets::run,METH_VARARGS,"Reassign whole atoms within a certified gather round."},
+    {"stage_route_jobs", stage_route_jobs, METH_VARARGS, "Compile a batch of stage route candidates."},
     {"compile_cached_path", compile_cached_path, METH_VARARGS, "Compile a path using request-local numeric coefficients."},
     {"compile_adjacency", compile_adjacency, METH_O, "Compile a request-local routing graph."},
+    {"trace_profile",trace_profile::price,METH_VARARGS,"Price all rows of a legal baseline."},
+    {"compile_lazy_graph",lazy_paths::compile,METH_O,"Compile incoming and outgoing edges for exact lazy routing."},
+    {"lazy_tree",lazy_paths::build,METH_VARARGS,"Compute primary distances for one rank."},
+    {"lazy_path",lazy_paths::path,METH_VARARGS,"Resolve the requested path and any required priority ties."},
     {"shortest_tree", shortest_tree, METH_VARARGS, "Compute a switch-only shortest-path tree."},
+    {"make_route_cache", make_route_cache, METH_O, "Request-local immutable route incidence."},
+    {"optimize_groups", optimize_groups, METH_VARARGS, "Price striped movements as one numeric batch."},
     {"optimize_round", optimize_round, METH_VARARGS, "Balance legal routes across a complete round."},
+    {"fill_slack", round_slack::run, METH_VARARGS, "Measure round headroom and advance ready copies."},
+    {"retime_transfers", retime_transfers, METH_VARARGS, "Reschedule transfers inside causal windows."},
+    {"choose_slot_trees", choose_slot_trees, METH_VARARGS, "Pack equal reduction slots onto complete legal trees."},
+    {"local_tail", local_tail::run, METH_VARARGS, "Rebuild local gather deliveries after inter-domain injections."},
+    {"cycle_relays", cycle_relays::run, METH_VARARGS, "Choose an already-informed domain as the inter-domain parent."},
+    {"domain_cycles", domain_cycles::run, METH_VARARGS, "Allocate rotating multicast lanes across physical domains."},
+    {"paced_launch", paced_launch, METH_VARARGS, "Choose integer launch times for replicated multicast trees."},
+    {"choose_tree_offsets", choose_tree_offsets, METH_VARARGS, "Round fractional wave shares onto complete trees."},
+    {"pipeline_costs", pipeline_costs, METH_VARARGS, "Price overlapping stages across split factors."},
     {"compile_path", compile_path, METH_VARARGS, "Compile path resource incidence."},
     {"make_assignment", make_assignment, METH_O, "Allocate numerical round loads."},
     {"choose", choose, METH_VARARGS, "Choose and insert a path using unchanged score."},
@@ -226,7 +270,7 @@ PyModuleDef module = {PyModuleDef_HEAD_INIT, "_capacity_native", nullptr, -1, me
 PyMODINIT_FUNC PyInit__capacity_native() {
     PyObject* result = PyModule_Create(&module);
     if (!result) return nullptr;
-    if (PyModule_AddIntConstant(result, "API_VERSION", 1) < 0) {
+    if (PyModule_AddIntConstant(result, "API_VERSION", 2) < 0) {
         Py_DECREF(result);
         return nullptr;
     }

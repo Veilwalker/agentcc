@@ -61,13 +61,22 @@ class Topology:
         obj.switch_overhead_us = obj._overhead(data.get("switch_processing_overhead_us", 0.3))
         obj.edges = {}
         bindings = {}
+        parsed_rates = {}
+
+        def parse_rate(value):
+            if not isinstance(value, str):
+                return bandwidth(value)
+            if value not in parsed_rates:
+                parsed_rates[value] = bandwidth(value)
+            return parsed_rates[value]
+
         for edge in data.get("edges", []):
             src, dst = edge["src"], edge["dst"]
             if src not in obj.nodes or dst not in obj.nodes or src == dst:
                 raise ValueError("edge references unknown or identical nodes")
             if not isinstance(edge.get("bidirectional", False), bool):
                 raise ValueError("bidirectional must be boolean")
-            capacity = bandwidth(edge["bw"])
+            capacity = parse_rate(edge["bw"])
             pairs = [(src, dst)]
             if edge.get("bidirectional", False):
                 pairs.append((dst, src))
@@ -84,7 +93,7 @@ class Topology:
             name = resource["id"]
             if not isinstance(name, str) or not name or name in obj.resources:
                 raise ValueError("invalid or duplicate resource ID")
-            obj.resources[name] = bandwidth(resource.get("capacity", resource.get("bw")))
+            obj.resources[name] = parse_rate(resource.get("capacity", resource.get("bw")))
             for ref in resource.get("edges", []):
                 if not isinstance(ref.get("bidirectional", False), bool):
                     raise ValueError("resource bidirectional must be boolean")
@@ -118,6 +127,7 @@ class Topology:
         obj._has_shared_edges = any(obj.edge_resources.values())
         obj._weighted_adjacency = OrderedDict()
         obj._native_adjacency = {}
+        obj._lazy_adjacency = {}
         obj._rank_exit_bounds = {}
         obj._rank_incoming = {}
         obj._tie_priorities = {}
@@ -157,6 +167,9 @@ class Topology:
         effective_weight = resource_weight if self._has_shared_edges else 0.0
         weight_key = (effective_size, effective_weight)
         key = (source, *weight_key)
+        if key in self._paths and not isinstance(self._paths[key], tuple):
+            self._paths.move_to_end(key)
+            return self._lazy_path(self._paths[key], destination, src, dst)
         if key not in self._paths:
             if weight_key not in self._weighted_adjacency:
                 scale = effective_size * 1e6
@@ -174,6 +187,8 @@ class Topology:
                     # returning a route with an unrepresentable timing model.
                     del self._weighted_adjacency[weight_key]
                     raise ValueError("routing costs exceed the finite numeric range")
+                if native is not None and hasattr(native, "compile_lazy_graph"):
+                    self._lazy_adjacency[weight_key] = native.compile_lazy_graph(self._weighted_adjacency[weight_key])
                 incoming = [[] for _ in range(rank_count)]
                 exits = [math.inf] * rank_count
                 for node, neighbors in enumerate(self._weighted_adjacency[weight_key][rank_count:], rank_count):
@@ -187,7 +202,7 @@ class Topology:
                 self._weighted_adjacency[weight_key][rank_count:] = [
                     [(node, cost) for node, cost in neighbors if node >= rank_count]
                     for neighbors in self._weighted_adjacency[weight_key][rank_count:]]
-                if native is not None and hasattr(native, "shortest_tree"):
+                if native is not None and hasattr(native, "shortest_tree") and weight_key not in self._lazy_adjacency:
                     self._native_adjacency[weight_key] = native.compile_adjacency(self._weighted_adjacency[weight_key])
                 self._rank_exit_bounds[weight_key] = exits
                 if len(self._weighted_adjacency) > 8:
@@ -195,6 +210,7 @@ class Topology:
                     del self._rank_exit_bounds[expired]
                     del self._rank_incoming[expired]
                     self._native_adjacency.pop(expired, None)
+                    self._lazy_adjacency.pop(expired, None)
             self._weighted_adjacency.move_to_end(weight_key)
             adjacency = self._weighted_adjacency[weight_key]
             if (src, dst) in self.edges:
@@ -210,6 +226,17 @@ class Topology:
                 # entire source-tree search (common for fast local mesh links).
                 if direct_cost <= entry_bound + self._rank_exit_bounds[weight_key][destination]:
                     return [src, dst]
+            if weight_key in self._lazy_adjacency:
+                tree = native.lazy_tree(self._lazy_adjacency[weight_key], source, rank_count)
+                if tree is not None:
+                    self._paths[key] = tree
+                    if len(self._paths) > self._path_cache_limit:
+                        self._paths.popitem(last=False)
+                    return self._lazy_path(tree, destination, src, dst)
+                # The legacy heap handles zero-increment costs at extreme
+                # floating-point scales. Compile this representation on demand.
+                if weight_key not in self._native_adjacency:
+                    self._native_adjacency[weight_key] = native.compile_adjacency(adjacency)
             node_count = len(self._node_names)
             distances = [math.inf] * node_count
             ties = [0] * node_count
@@ -278,6 +305,16 @@ class Topology:
         while route[-1] != source:
             route.append(previous[route[-1]])
         return [self._node_names[node] for node in reversed(route)]
+
+    def _lazy_path(self, tree, destination, src, dst):
+        route = native.lazy_path(tree, destination, self._switch_priority)
+        if route is None:
+            raise ValueError(f"no switch-only route between {src} and {dst}")
+        return [self._node_names[i] for i in route]
+
+    def _switch_priority(self, source, node):
+        payload = (self._node_names[source] + "\0" + self._node_names[node]).encode()
+        return int.from_bytes(hashlib.sha256(payload).digest()[:4], "big")
 
     def summary(self) -> dict:
         """Compact input evidence for planning, without all paths or chunk lists."""

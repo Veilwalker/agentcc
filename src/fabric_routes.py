@@ -15,14 +15,20 @@ from .capacity_backend import native, NativeCapacityAssignment
 
 
 class RouteCatalog:
-    def __init__(self, graph, size_bytes, max_ports=16, branch_ports=False):
+    def __init__(self, graph, size_bytes, max_ports=16, branch_ports=False, deep_exits=False):
         if type(max_ports) is not int or not 1 <= max_ports <= 16:
             raise ValueError('route catalog permits 1..16 access ports')
         self.graph, self.size = graph, size_bytes
         self.max_ports = max_ports
+        self.deep_exits = deep_exits
         self.branch_ports = branch_ports
         self.trees, self.paths = {}, {}
         self.fabric_paths = {}
+        self.spine_choices = {}
+        self.independent_spines = {}
+        self.shared_spine_plane = self.separate_spine_planes = False
+        self.diverse_cores = {}
+        self.rank_index = {r: i for i, r in enumerate(graph.ranks)}
         self.capacity_costs = CapacityCosts(graph)
         self.compiled_options = {}
         self.relaxations = 0
@@ -45,6 +51,27 @@ class RouteCatalog:
             rows.sort(key=lambda row: (row[1], row[0]))
         for rows in self.incoming.values():
             rows.sort()
+
+        self.starts = {r: tuple(sorted(s for s, _ in rows[:max_ports]))
+                       for r, rows in self.outgoing.items()}
+        self.isolated_switches = not any(self.adjacency.values())
+        self.core_cache = {}
+        # If each weak switch component has just one possible exit for a
+        # destination, its endpoint cost is an additive constant. All ranks
+        # with those exit ports can share the same core-path computation.
+        parents = {s: s for s in self.adjacency}
+        def root(s):
+            while s != parents[s]:
+                parents[s] = parents[parents[s]]
+                s = parents[s]
+            return s
+        for src, peers in self.adjacency.items():
+            for dst, _ in peers:
+                parents[root(dst)] = root(src)
+        self.exits = {}
+        for rank, ports in self.incoming.items():
+            unique_exit = len({root(s) for s, _ in ports}) == len(ports)
+            self.exits[rank] = tuple((s, 0.0) for s, _ in ports) if unique_exit else tuple(ports)
 
     def _tree(self, start):
         if start not in self.trees:
@@ -72,13 +99,38 @@ class RouteCatalog:
                 raise ValueError('fabric route pair budget exhausted')
             # Ranks with identical access switches share the switch-only
             # portion. Endpoint edges remain explicit in every final path.
-            starts = tuple(start for start, _ in self.outgoing[source][:self.max_ports])
-            exits = tuple(self.incoming[destination])
+            starts = self.starts.get(source, ())
+            exits = self.exits.get(destination, ())
             branch = self.branch_ports and len(self.outgoing[source]) <= 2
             key = starts, exits, branch
             if key not in self.fabric_paths:
                 self.fabric_paths[key] = self._fabric_options(starts, exits, branch)
+                cores = self.fabric_paths[key]
+                variants = []
+                if (self.branch_ports and not branch and len(cores) >= 3
+                        and all(len(core) == 3 for core in cores)
+                        and len({core[0] for core in cores}) >= 3):
+                    for start, _, end in cores:
+                        spines = self._spines(start, end)
+                        # Multiple spines in the same shared plane still draw
+                        # from the same pool. Keep the compact original catalog
+                        # unless another spine offers a different resource set.
+                        if (start, end) not in self.independent_spines:
+                            pools = {frozenset((*self.graph.edge_resources[start, m],
+                                                *self.graph.edge_resources[m, end])) for m in spines}
+                            self.independent_spines[start, end] = len(pools) > 1
+                        if self.independent_spines[start, end]:
+                            self.separate_spine_planes = True
+                            variants.append((start, end, spines))
+                        elif len(spines) > 1:
+                            self.shared_spine_plane = True
+                self.diverse_cores[key] = variants
             choices = {(source, *core, destination) for core in self.fabric_paths[key]}
+            if self.diverse_cores[key]:
+                offset = self.rank_index[source] * 31 + self.rank_index[destination]
+                for lane, (start, end, spines) in enumerate(self.diverse_cores[key]):
+                    middle = spines[(offset + lane) % len(spines)]
+                    choices.add((source, start, middle, end, destination))
             if pair in self.graph.edges:
                 choices.add(pair)
             self.paths[pair] = tuple(sorted(choices))
@@ -86,20 +138,36 @@ class RouteCatalog:
             return self.paths[pair]
         return tuple(sorted(set(self.paths[pair]) | {tuple(original)}))
 
+    def _spines(self, start, end):
+        key = start, end
+        if key not in self.spine_choices:
+            self.spine_choices[key] = tuple(m for m, _ in self.adjacency[start]
+                if m not in key and (m, end) in self.graph.edges)
+        return self.spine_choices[key]
+
     def _fabric_options(self, starts, exits, branch):
+        if self.isolated_switches:
+            sink_ports = {end for end, _ in exits}
+            return tuple((start,) for start in starts if start in sink_ports)
         choices = set()
         for start in starts:
-            distances, previous = self._tree(start)
-            reachable = [(distances[end] + cost, end) for end, cost in exits
-                         if end in distances]
-            if not reachable:
+            key = start, exits
+            if key not in self.core_cache:
+                distances, previous = self._tree(start)
+                end = min(((distances[node] + cost, node) for node, cost in exits
+                           if node in distances), default=None)
+                core = []
+                if end is not None:
+                    node = end[1]
+                    core.append(node)
+                    while node != start:
+                        node = previous[node]
+                        core.append(node)
+                self.core_cache[key] = tuple(reversed(core))
+            core = self.core_cache[key]
+            if not core:
                 continue
-            _, end = min(reachable)
-            path = [end]
-            while end != start:
-                end = previous[end]
-                path.append(end)
-            choices.add(tuple(reversed(path)))
+            choices.add(core)
             if branch:
                 # Explore a bounded set of actual second switch hops when
                 # a rank has too few access switches to expose fabric paths.
@@ -116,6 +184,41 @@ class RouteCatalog:
                         tail.append(end2)
                     if start not in tail:
                         choices.add((start, *reversed(tail)))
+        if branch and self.deep_exits:
+            # A sole access port can hide all real choices one switch farther
+            # into the fabric. Retain simple directed paths via each such exit.
+            for start in starts:
+                peers = self.adjacency[start]
+                for middle, _ in peers:
+                    for end, _ in exits:
+                        if end != start and (middle, end) in self.graph.edges:
+                            choices.add((start, middle, end))
+                    if len(peers) != 1:
+                        continue
+                    for via, _ in self.adjacency[middle][:12]:
+                        if via == start:
+                            continue
+                        distance, previous = self._tree(via)
+                        reachable = [(distance[end] + cost, end) for end, cost in exits
+                                     if end in distance]
+                        if not reachable:
+                            continue
+                        _, node = min(reachable)
+                        tail = [node]
+                        while node != via:
+                            node = previous[node]
+                            tail.append(node)
+                        if start not in tail and middle not in tail:
+                            choices.add((start, middle, *reversed(tail)))
+        # A rank can have many local ports yet only one port that reaches a
+        # remote group. Enumerate the parallel spines of that real uplink.
+        # Each added three-switch path has both directed hops in the input.
+        if self.branch_ports and not branch and choices and all(len(core) == 3 for core in choices):
+            gateways = {(core[0], core[-1]) for core in choices}
+            if len(gateways) <= 2:
+                for start, end in gateways:
+                    for middle in self._spines(start, end)[:16]:
+                        choices.add((start, middle, end))
         return tuple(sorted(choices))
 
 
@@ -126,18 +229,22 @@ class CapacityCosts:
         self.indices = {('edge', edge): i for i, edge in enumerate(graph.edges)}
         self.indices.update({('pool', key): len(graph.edges) + i for i, key in enumerate(graph.resources)})
         self.paths = {}
+        self.round_cache = native.make_route_cache(len(self.indices)) if native is not None else None
         self._native_graph = None
+
+    def native_graph(self):
+        if self._native_graph is None:
+            graph = self.graph
+            self._native_graph = native.make_capacity_graph(
+                graph.edges, graph.edge_resources, graph.resources,
+                self.indices, graph.startup_us, graph.switch_overhead_us)
+        return self._native_graph
 
     def compile(self, path):
         path = tuple(path)
         if path not in self.paths:
             if native is not None:
-                graph = self.graph
-                if self._native_graph is None:
-                    self._native_graph = native.make_capacity_graph(
-                        graph.edges, graph.edge_resources, graph.resources,
-                        self.indices, graph.startup_us, graph.switch_overhead_us)
-                self.paths[path] = native.compile_cached_path(self._native_graph, path)
+                self.paths[path] = native.compile_cached_path(self.native_graph(), path)
                 return self.paths[path]
             graph, pools, terms, serial = self.graph, defaultdict(int), [], 0.0
             for edge in zip(path, path[1:]):

@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 import math
 import time
 
-from .replay import replay
+from .replay import certify as replay
 
 
 class _PathCosts:

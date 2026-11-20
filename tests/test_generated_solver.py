@@ -149,7 +149,7 @@ class GeneratedProgramTests(unittest.TestCase):
         self.assertFalse(evidence['selected'])
         self.assertIn('unavailable', evidence['space'])
 
-    def test_bad_program_feedback_then_verified_improvement(self):
+    def test_bad_program_uses_local_fallback_without_retry(self):
         task, data = make_case(8, 'all-reduce')
         bad = 'def solve(c,limit):\n x=len(c)\n return [0,[0]]'
         meta = {'called': True, 'usage': {'total_tokens': 1}, 'duration_ms': 1}
@@ -157,12 +157,24 @@ class GeneratedProgramTests(unittest.TestCase):
                 side_effect=[(bad,meta),(SINGLE_REFERENCE,meta)]) as model:
             result = solve_input({'task':task,'topology':data})
         self.assertTrue(result['diagnostics']['local_replay']['valid'])
-        self.assertEqual(model.call_count, 2)
+        self.assertEqual(model.call_count, 1)
         execution = result['diagnostics']['search']['model_edit']['executions']
         self.assertFalse(execution[0]['valid_program'])
         self.assertEqual(execution[0]['decision'], 'invalid_program')
-        self.assertTrue(execution[1]['valid_program'])
-        self.assertIsNotNone(model.call_args.args[2])
+        self.assertEqual(len(execution), 1)
+        fallback = result['diagnostics']['search']['model_edit']['guard']['local_fallback']
+        self.assertEqual(fallback['origin'], 'local_fallback')
+
+    def test_model_writes_objective_and_predecessor_reduction(self):
+        from src.code_policy import compile_reduction
+        costs = [[], [5], [5, 2]]
+        best = Program(compile_reduction('lambda v,t: v+t'))
+        self.assertEqual(best.run(costs, 2), [2])
+        self.assertEqual(best.run([[], [1], [1, 9]], 2), [1, 1])
+        self.assertEqual(Program(compile_reduction('max(v+t)')).run(costs, 2), [1, 1])
+        self.assertEqual(Program(compile_reduction('lambda v,t: v-t')).run(costs, 2), [1, 1])
+        for bad in ('lambda x: v+t', 'lambda v,t: v+t+w', 'lambda v,t: eval(v+t)', 'min(1)', 'min(t)', 'min(v+g(t))', 'min(v+t); pass'):
+            self.assertEqual(compile_reduction(bad), '')
 
     def test_truncated_frontier_keeps_evidence_but_cannot_execute(self):
         from src.code_policy import propose

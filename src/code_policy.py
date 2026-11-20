@@ -1,4 +1,4 @@
-"""One model-generated search program, with a bounded feedback repair call."""
+"""Generate a single request-specific search program."""
 import ast
 from contextlib import nullcontext
 from dataclasses import replace
@@ -47,15 +47,97 @@ def assemble_body(raw):
 
 
 FRONTIER_SYSTEM = (
-    'Write one Python expression only, without assignment or Markdown. You implement a '
-    'minimum-time collective scheduling recurrence. Runtime a is a list of (v,p,w,t): '
-    'v is predecessor cost, p is its list of widths, w is this stage width, t is its '
-    'cost from current edges and shared capacities. For each tuple add t to v and '
-    'append w to p. Return the minimum resulting (total_cost,width_list) tuple. '
-    'Use min with a generator and tuple unpacking; no other function. '
-    'No lambda or keyword arguments; compare tuples directly. '
-    'The host executes this recurrence over all stages; Replay checks its output.'
+    "Write one Python lambda only: lambda v,t: EXPRESSION. v is predecessor completion "
+    "time and t is the FULL cost of the candidate communication stage. The host ranks "
+    "alternatives by the return value (smaller first). Determine the end-to-end time "
+    "after executing the two stages in sequence. No calls, Markdown, or explanations."
 )
+
+
+LAYOUT_SYSTEM = (
+    "Design a sharded collective tree for these unequal domains with overlapping access ports. "
+    "Return just (spacing, root_index_expression). spacing 2..9 samples every kth local "
+    "neighbor as relay. Small k spreads the first hop but adds fanout. The host reduces "
+    "the expression modulo domain size n. i is the slot or source index, g the destination "
+    "domain index. Spread roots across ports and avoid correlations between domains and slots. "
+    "Use i,g,n, small integers and +,-,*,//,%,^ only. No text or calls."
+)
+
+
+def relay_expression(source):
+    """Interpret only a small integer expression on slot and domain coordinates."""
+    import operator
+    ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+           ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.BitXor: operator.xor}
+    tree = ast.parse(source, mode='eval').body
+    if len(list(ast.walk(tree))) > 25:
+        raise ValueError('relay expression too large')
+    def compile_node(node):
+        if isinstance(node, ast.Name) and node.id in ('i', 'g', 'n'):
+            position = ('i', 'g', 'n').index(node.id)
+            return lambda coordinates: coordinates[position]
+        if isinstance(node, ast.Constant) and type(node.value) is int and 0 <= node.value <= 64:
+            return lambda coordinates: node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            op, left, right = ops[type(node.op)], compile_node(node.left), compile_node(node.right)
+            return lambda coordinates: op(left(coordinates), right(coordinates))
+        raise ValueError('invalid relay expression')
+    return compile_node(tree)
+
+
+def layout_response(raw):
+    if len(raw) > 512:
+        return None
+    try:
+        node = ast.parse(raw.strip(), mode='eval').body
+        if not isinstance(node, ast.Tuple) or len(node.elts) != 2:
+            return None
+        spacing, expression = node.elts
+        if not isinstance(spacing, ast.Constant) or type(spacing.value) is not int or not 2 <= spacing.value <= 9:
+            return None
+        if not any(isinstance(x, ast.Name) and x.id == 'i' for x in ast.walk(expression)):
+            return None
+        source = ast.unparse(expression)
+        relay_expression(source)
+        return [spacing.value, source]
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+
+
+def compile_reduction(raw):
+    """Turn a model-written reduction over predecessors into a bounded VM program."""
+    fragment = raw.strip()
+    if fragment.startswith('```') and fragment.endswith('```'):
+        fragment = '\n'.join(fragment.splitlines()[1:-1]).strip()
+    try:
+        node = ast.parse(fragment, mode='eval').body
+    except (SyntaxError, ValueError, RecursionError):
+        return ''
+    if isinstance(node, ast.Lambda):
+        args = node.args
+        if (args.posonlyargs or args.vararg or args.kwonlyargs or args.kwarg or args.defaults
+                or [arg.arg for arg in args.args] != ['v', 't']):
+            return ''
+        reducer, score = 'min', node.body
+    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+          and node.func.id in ('min', 'max') and len(node.args) == 1 and not node.keywords):
+        # Permit replay of code generated under either earlier expression protocol.
+        reducer, score = node.func.id, node.args[0]
+        if isinstance(score, ast.GeneratorExp):
+            return assemble_frontier(fragment)
+    else:
+        return ''
+    syntax = (ast.Name, ast.Load, ast.BinOp, ast.Add, ast.Sub, ast.Mult,
+              ast.Div, ast.UnaryOp, ast.UAdd, ast.USub, ast.Constant)
+    nodes = list(ast.walk(score))
+    names = {item.id for item in nodes if isinstance(item, ast.Name)}
+    allowed_names = {'v', 't'} if isinstance(node, ast.Lambda) else {'v', 't', 'w'}
+    if (len(nodes) > 24 or not {'v', 't'} <= names <= allowed_names
+            or any(not isinstance(item, syntax) for item in nodes)
+            or any(type(item.value) not in (int, float) for item in nodes if isinstance(item, ast.Constant))):
+        return ''
+    expression = ast.unparse(score)
+    return assemble_frontier(f'{reducer}((({expression}),p+[w]) for v,p,w,t in a)')
 
 
 def assemble_frontier(raw):
@@ -86,7 +168,14 @@ def assemble_frontier(raw):
 
 def propose(problem, settings, feedback=None):
     body_mode = problem['step_bound_free']
+    layout_mode = 'access_domains' in problem
+    operator_mode = body_mode and not layout_mode and 'trace' in problem
     content = dict(problem)
+    if 'trace' in content:
+        # The routed round table includes the effect of these capacities on
+        # actual transfers. Keep the short request centered on that evidence.
+        for field in ('directed_edge_GBs','shared_pools','edge_GBs_range','edges','step_bound_free'):
+            content.pop(field, None)
     if feedback is not None:
         content['repair'] = feedback
     try:
@@ -97,30 +186,70 @@ def propose(problem, settings, feedback=None):
     with trace as call:
         started = time.monotonic()
         try:
+            user_input = json.dumps(content, separators=(',', ':'))
+            if operator_mode:
+                user_input += ('\nChoose the repair for this input. Reply in exactly the form 3|R, '
+                               'using your chosen index and action. Only the record.')
+            elif layout_mode:
+                user_input += '\nReturn the layout tuple for these domains.'
+            elif body_mode and not operator_mode:
+                user_input += '\nWrite the one-line recurrence now. Return code only.'
+            system = LAYOUT_SYSTEM if layout_mode else FRONTIER_SYSTEM if body_mode else SYSTEM
+            if operator_mode:
+                system = ('Machine control API. Output exactly one ASCII record matching [0-9]+[|][ER]. '
+                          'No prose or markdown. E prioritizes advancing ready copies on the same path. '
+                          'R tries a different ready relay first. Each row lists hot resource, duration us, '
+                          'mean idle percent and percent fitting earlier. Choose one zero-based row and action.')
+            elif 'trace' in content:
+                system += (' trace is a routed baseline, one row per round: [busiest pool P or edge E,'
+                           ' microseconds, mean idle % on used resources, % of transfers fitting one round earlier].'
+                           ' Pick a round for local repair, balancing congestion, usable slack and repeated bottlenecks.'
+                           ' Prefix your answer with its zero-based row index and |.')
             raw, evidence = _chat_completion(
-                FRONTIER_SYSTEM if body_mode else SYSTEM,
-                json.dumps(content, separators=(',', ':')),
-                # Normal frontier expressions used 25--27 output tokens in
-                # live trials. Bound off-task prose before the feedback call;
-                # this is a tail-cost limit, not a normal-latency guarantee.
-                replace(settings, max_tokens=48 if body_mode else 512),
+                system,
+                user_input,
+                replace(settings, max_tokens=20 if operator_mode else 40 if layout_mode else 32 if body_mode else 512),
                 temperature=0, allow_truncated=True)
         except LLMError as error:
             error.duration_ms = (time.monotonic() - started) * 1000
             raise
         redacted = bool(settings.api_key and settings.api_key in raw)
         patch = raw.replace(settings.api_key, '[REDACTED]') if redacted else raw
-        source = assemble_frontier(patch) if body_mode else patch
-        evidence.update(mode='generated_stage_solver',
-            response_evidence={'format': 'python_frontier_expression' if body_mode else 'python_source', 'content': patch,
-                               'credential_redacted': redacted},
-            program_protocol='incoming_v1' if body_mode else 'outgoing_v1',
-            generation_scope='frontier_combination_and_selection' if body_mode else 'search_function',
-            code_sha256=hashlib.sha256(source.encode()).hexdigest())
+        payload = patch
+        if 'trace' in content:
+            index, marker, body = patch.strip().partition('|')
+            if marker and index.strip().isascii() and index.strip().isdigit() and len(index.strip()) <= 2:
+                payload = body.strip()
+                choice = int(index.strip())
+                if not redacted and evidence.get('finish_reason') != 'length' and choice < len(content['trace']):
+                    evidence['focus_id'] = choice
+        if operator_mode:
+            source = ''
+            protocol, scope, fmt = 'round_operator_v1', 'round_and_relay_priority', 'round_selection'
+            if evidence.get('focus_id') is not None and payload.upper() in ('E','R'):
+                evidence['repair_policy'] = payload.upper()
+            else:
+                evidence.pop('focus_id', None)
+        elif layout_mode:
+            layout = layout_response(payload)
+            source = layout[1] if layout else ''
+            evidence['relay_layout'] = layout if not redacted and evidence.get('finish_reason') != 'length' else None
+            protocol, scope, fmt = 'access_layout_v1', 'relay_placement', 'relay_layout_expression'
+        else:
+            source = compile_reduction(payload) if body_mode else payload
+            protocol = 'incoming_v1' if body_mode else 'outgoing_v1'
+            scope = 'frontier_combination_and_selection' if body_mode else 'search_function'
+            fmt = 'stage_reduction_expression' if body_mode else 'python_source'
+        evidence.update(mode='round_operator' if operator_mode else 'generated_solver', response_evidence={'format': fmt, 'content': patch,
+                        'credential_redacted': redacted}, program_protocol=protocol, generation_scope=scope,
+                        code_sha256=hashlib.sha256(source.encode()).hexdigest())
         if call is not None:
             usage = evidence.get('usage', {})
             call.set(input_tokens=usage.get('prompt_tokens', 0), output_tokens=usage.get('completion_tokens', 0))
-            call.result({'source': source, 'sha256': evidence['code_sha256']})
+            if operator_mode:
+                call.result({'focus_id': evidence.get('focus_id'), 'repair_policy': evidence.get('repair_policy')})
+            else:
+                call.result({'source': source, 'sha256': evidence['code_sha256']})
         if redacted or evidence.get('finish_reason') == 'length':
             source = ''
         return source, evidence

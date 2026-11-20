@@ -4,10 +4,33 @@ The stage compiler fixes contributor dependencies. This layer changes only
 legal routes for those same movements. Preview and materialization share exact
 atom intervals, so the round objective can be independently checked by Replay.
 """
-import math
+from .stage_program import LazyPlan, PacketPlan
 
 from .capacity_backend import native
 from .striped_stages import StripedStageSpace
+
+
+class StripePlan(LazyPlan):
+    """Store only byte-sized route decisions until a winning stage is emitted."""
+    packet_width = PacketPlan.packet_width
+
+    def __init__(self, space, entries, jobs, selected, duration):
+        self.costs, self.size, self.stripes = space.costs, space.size, space.stripes
+        self.minimum = space.minimum_packet
+        self.entries, self.jobs, self.selected = entries, jobs, selected
+        self.duration = duration
+
+    def __len__(self):
+        return len(self.selected)
+
+    def __iter__(self):
+        choices = iter(self.selected)
+        for ((action, source, destination), atoms), (options, _) in zip(self.entries, self.jobs):
+            lanes = min(self.stripes, atoms, len(options))
+            for lane in range(lanes):
+                start, end = atoms*lane//lanes, atoms*(lane+1)//lanes
+                step = 1 if self.minimum else (end-start+3)//4
+                yield action, source, destination, options[next(choices)][3], start, end, step
 
 
 class BalancedStageSpace(StripedStageSpace):
@@ -20,28 +43,11 @@ class BalancedStageSpace(StripedStageSpace):
         self.routing_audit = []
 
     def _route_counts(self, movements):
-        packets, bindings = [], []
-        for (action, source, destination), atoms in sorted(movements.items(), key=lambda r: -r[1]):
-            pair = source, destination
-            if pair not in self.options:
-                self.options[pair] = tuple(self.costs.compile(path)
-                    for path in self.catalog.options(source, destination))
-            options = self.options[pair]
-            lanes = min(self.stripes, atoms, max(1, len(options)))
-            for lane in range(lanes):
-                start, end = atoms * lane // lanes, atoms * (lane + 1) // lanes
-                step = 1 if self.minimum_packet else max(1, (end - start + 3) // 4)
-                packets.append((options, (end - start) * self.size, step * self.size))
-                bindings.append((action, source, destination, start, end, step))
-        selected, before, duration, moved = native.optimize_round(len(self.costs.indices), packets, self.passes)
-        self.routing_audit.append({'packets': len(packets), 'before_us': before,
+        entries = sorted(movements.items(), key=lambda row: -row[1])
+        jobs = self.route_jobs(entries)
+        selected, before, duration, moved = native.optimize_groups(
+            len(self.costs.indices), jobs, self.passes, self.costs.round_cache,
+            self.stripes, self.size, self.minimum_packet)
+        self.routing_audit.append({'packets': len(selected), 'before_us': before,
                                    'after_us': duration, 'route_changes': moved})
-        result = []
-        for binding, packet, choice in zip(bindings, packets, selected):
-            action, source, destination, start, end, step = binding
-            _, overhead, serial, path = packet[0][choice]
-            limit = (duration - overhead) / (serial * self.size)
-            if math.isfinite(limit):
-                step = max(step, min(end - start, math.floor(limit * (1 - 1e-12))))
-            result.append((action, source, destination, path, start, end, step))
-        return result, duration
+        return StripePlan(self, entries, jobs, selected, duration), duration

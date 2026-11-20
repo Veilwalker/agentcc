@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .topology import Topology
+from .capacity_backend import native
 
 
 class ReplayError(ValueError):
@@ -33,6 +34,25 @@ def _unique_strings(value: Any, field: str) -> list[str]:
     return value
 
 
+def _chunk_index(graph, ranks, split):
+    # Multiple candidate schedules share this immutable input-derived schema.
+    # Candidate declarations, ownership and final possession are still checked
+    # anew. The graph belongs to this request and the one-entry key tracks rank
+    # order as well as split if either changes during a search.
+    key = (tuple(ranks), split)
+    cached = getattr(graph, "_replay_chunks", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
+    atoms, initial = {}, {}
+    for owner, rank in enumerate(ranks):
+        own = [f"{rank}_c{slot}" for slot in range(split)]
+        initial[rank] = frozenset(own)
+        atoms.update((name, owner * split + slot) for slot, name in enumerate(own))
+    if len(atoms) <= 131072:
+        graph._replay_chunks = key, atoms, initial
+    return atoms, initial
+
+
 def _solution_body(task: dict, value: dict) -> dict:
     _require(isinstance(value, dict), "solution must be an object")
     for field in ("task_id", "instance_id"):
@@ -53,7 +73,7 @@ def _solution_body(task: dict, value: dict) -> dict:
     return value
 
 
-def replay(task: dict, topology: dict | Topology, solution: dict) -> dict:
+def replay(task: dict, topology: dict | Topology, solution: dict, *, native_gather=False) -> dict:
     """Validate and time a solution, returning a JSON-friendly report.
 
     Invalid schedules return ``valid=False`` and an explanatory ``errors`` list.
@@ -62,7 +82,7 @@ def replay(task: dict, topology: dict | Topology, solution: dict) -> dict:
     """
     try:
         graph = topology if isinstance(topology, Topology) else Topology.from_data(topology)
-        return _replay(task, graph, _solution_body(task, solution))
+        return _replay(task, graph, _solution_body(task, solution), native_gather)
     except (ReplayError, ValueError, TypeError, KeyError, AttributeError) as exc:
         return {
             "valid": False,
@@ -74,7 +94,12 @@ def replay(task: dict, topology: dict | Topology, solution: dict) -> dict:
         }
 
 
-def _replay(task: dict, graph: Topology, solution: dict) -> dict:
+def certify(task, graph, solution):
+    """Use the native verifier on large gathers; the reference remains independently callable."""
+    return replay(task, graph, solution, native_gather=True)
+
+
+def _replay(task: dict, graph: Topology, solution: dict, native_gather: bool) -> dict:
     ranks = _unique_strings(task.get("ranks", task.get("npu")), "task.ranks")
     _require(bool(ranks), "task.ranks cannot be empty")
     _require(ranks == list(graph.ranks), "task.ranks and topology.ranks must agree in order")
@@ -100,17 +125,13 @@ def _replay(task: dict, graph: Topology, solution: dict) -> dict:
     chunk_bytes = data_bytes // split
     _require(chunk_bytes % alignment == 0, "chunk size violates alignment_bytes")
 
-    chunk_ids = {
-        f"{rank}_c{slot}": (rank_id, slot)
-        for rank_id, rank in enumerate(ranks)
-        for slot in range(split)
-    }
-    _require(set(chunks) == set(chunk_ids), "chunks must contain exactly every rank and slot")
+    chunk_ids, initial_names = _chunk_index(graph, ranks, split)
+    _require(set(chunks) == chunk_ids.keys(), "chunks must contain exactly every rank and slot")
     initial = solution.get("initial_possession")
     _require(isinstance(initial, dict) and set(initial) == set(ranks), "initial_possession must cover all ranks")
     for rank in ranks:
         own = _unique_strings(initial[rank], f"initial_possession[{rank}]")
-        _require(set(own) == {f"{rank}_c{slot}" for slot in range(split)}, "initial_possession must contain only the rank's own slots")
+        _require(set(own) == initial_names[rank], "initial_possession must contain only the rank's own slots")
 
     full_contributors = (1 << len(ranks)) - 1
     expression_cache: dict[str, tuple[int, int]] = {}
@@ -129,7 +150,7 @@ def _replay(task: dict, graph: Topology, solution: dict) -> dict:
             contributors = 0
             for part in token.split("+"):
                 _require(part in chunk_ids, f"unknown contribution: {part}")
-                source, part_slot = chunk_ids[part]
+                source, part_slot = divmod(chunk_ids[part], split)
                 _require(slot is None or slot == part_slot, "expression mixes reduction slots")
                 _require(not contributors & (1 << source), "expression repeats a contributor")
                 slot = part_slot
@@ -151,6 +172,19 @@ def _replay(task: dict, graph: Topology, solution: dict) -> dict:
     _require(_integer(solution.get("round_count")) and solution["round_count"] == len(rounds), "round_count must equal the number of declared rounds")
     max_rounds = task.get("max_nonempty_rounds", 64)
     _require(_integer(max_rounds) and max_rounds >= 0, "invalid max_nonempty_rounds")
+    if (native_gather and native is not None
+            and (operator == "all-gather" or hasattr(native, "verify_reduce"))
+            and task.get("allow_copy", True) and 16 <= len(ranks) <= 512 and split <= 512
+            and len(ranks) * len(chunks) <= 8_000_000 and data_bytes * len(ranks)**2 <= 2**52):
+        nodes = {node: i for i, node in enumerate([*ranks, *sorted(graph.switches)])}
+        verify = native.verify_gather if operator == "all-gather" else getattr(native, "verify_canonical_reduce", native.verify_reduce)
+        times = verify(nodes, chunk_ids, graph.edges, graph.edge_resources,
+                                     graph.resources, rounds, len(ranks), split, chunk_bytes,
+                                     graph.startup_us, graph.switch_overhead_us,
+                                     *([expression] if operator == "all-reduce" else []))
+        _require(len(times) <= max_rounds, "too many nonempty rounds")
+        return dict(valid=True, errors=[], total_time_us=sum(times), round_times_us=times,
+                    nonempty_rounds=len(times), split=split)
     all_chunks_mask = (1 << len(chunks)) - 1
     own_slots_mask = (1 << split) - 1
     ag_state = [own_slots_mask << (i * split) for i in range(len(ranks))]
@@ -161,8 +195,7 @@ def _replay(task: dict, graph: Topology, solution: dict) -> dict:
     # only its validated chunk mask, never sender ownership or receive state:
     # those still have to be checked separately for every transfer and round.
     ag_payloads: dict[tuple[str, ...], int] = {}
-    ag_bits = {token: 1 << (owner * split + slot)
-               for token, (owner, slot) in chunk_ids.items()} if operator == "all-gather" else {}
+    ag_bits = {token: 1 << index for token, index in chunk_ids.items()} if operator == "all-gather" else {}
     round_times: list[float] = []
 
     for number, round_data in enumerate(rounds, 1):

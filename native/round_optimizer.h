@@ -10,8 +10,12 @@ struct RouteOption {
     std::vector<std::pair<size_t, double>> terms;
     double overhead, serial;
 };
+struct RouteFamily : std::vector<RouteOption> {
+    size_t incidence = 0;
+    double max_factor = 0., max_serial = 0., max_overhead = 0.;
+};
 struct Packet {
-    std::shared_ptr<std::vector<RouteOption>> options;
+    std::shared_ptr<RouteFamily> options;
     const std::vector<RouteOption>& routes() const { return *options; }
     double bytes, packet_bytes;
 };
@@ -27,7 +31,11 @@ public:
     void set(size_t index, double value) {
         size_t at = base + index;
         tree[at] = value;
-        while ((at /= 2)) tree[at] = std::max(tree[at * 2], tree[at * 2 + 1]);
+        while ((at /= 2)) {
+            const double next = std::max(tree[at * 2], tree[at * 2 + 1]);
+            if (tree[at] == next) break;
+            tree[at] = next;
+        }
     }
     double maximum() const { return tree[1]; }
 };
@@ -35,11 +43,11 @@ public:
 struct RoundOptimizer {
     std::vector<double> loads;
     MaxLoads maximum;
-    std::multiset<double> overheads{0.0}, serials{0.0};
-    explicit RoundOptimizer(size_t n) : loads(n, 0.0), maximum(n) {}
+    MaxLoads overheads, serials;
+    RoundOptimizer(size_t n, size_t packets) : loads(n, 0.0), maximum(n), overheads(packets), serials(packets) {}
 
     double time() const {
-        return std::max(*serials.rbegin(), *overheads.rbegin() + maximum.maximum());
+        return std::max(serials.maximum(), overheads.maximum() + maximum.maximum());
     }
     std::array<double, 4> score(const Packet& packet, const RouteOption& route) const {
         double busy = 0.0, energy = 0.0;
@@ -49,51 +57,92 @@ struct RoundOptimizer {
             energy += after * after - before * before;
         }
         double serial = route.overhead + packet.packet_bytes * route.serial;
-        return {std::max({*serials.rbegin(), serial,
-                   std::max(*overheads.rbegin(), route.overhead) +
+        return {std::max({serials.maximum(), serial,
+                   std::max(overheads.maximum(), route.overhead) +
                    std::max(maximum.maximum(), busy)}), busy, energy, serial};
     }
-    void change(const Packet& packet, const RouteOption& route, bool add) {
+    void change(size_t index, const Packet& packet, const RouteOption& route, bool add) {
         for (auto [index, factor] : route.terms) {
             loads[index] = std::max(0.0, loads[index] + (add ? 1 : -1) * packet.bytes * factor);
             maximum.set(index, loads[index]);
         }
         const double serial = route.overhead + packet.packet_bytes * route.serial;
-        if (add) {
-            overheads.insert(route.overhead);
-            serials.insert(serial);
-        } else {
-            overheads.erase(overheads.find(route.overhead));
-            serials.erase(serials.find(serial));
-        }
+        overheads.set(index, add ? route.overhead : 0.);
+        serials.set(index, add ? serial : 0.);
     }
 };
 
-PyObject* optimize_round(PyObject*, PyObject* args) {
+// Route options are immutable tuples owned by the request's catalog. Retain
+// each key to keep identity stable while different stages reuse its incidence.
+struct RouteCache {
     Py_ssize_t resources;
-    PyObject* input;
+    std::unordered_map<PyObject*, std::shared_ptr<RouteFamily>> routes;
+    explicit RouteCache(Py_ssize_t count) : resources(count) {}
+    ~RouteCache() { for (auto& entry : routes) Py_DECREF(entry.first); }
+};
+
+void release_route_cache(PyObject* capsule) {
+    delete static_cast<RouteCache*>(PyCapsule_GetPointer(capsule, "agentcc.RouteCache"));
+}
+
+PyObject* make_route_cache(PyObject*, PyObject* arg) {
+    Py_ssize_t resources = PyLong_AsSsize_t(arg);
+    if (PyErr_Occurred()) return nullptr;
+    try {
+        auto cache = std::make_unique<RouteCache>(resources);
+        PyObject* capsule = PyCapsule_New(cache.get(), "agentcc.RouteCache", release_route_cache);
+        if (capsule) cache.release();
+        return capsule;
+    } catch (const std::bad_alloc&) { return PyErr_NoMemory(); }
+}
+
+PyObject* optimize_packets(PyObject* args, bool grouped) {
+    Py_ssize_t resources;
+    PyObject *input, *capsule = Py_None;
     int passes = 2;
-    if (!PyArg_ParseTuple(args, "nO|i", &resources, &input, &passes)) return nullptr;
+    int stripes=1, minimum=1;
+    double atom_bytes=0.;
+    if (grouped) {
+        if (!PyArg_ParseTuple(args,"nOiOidp",&resources,&input,&passes,&capsule,&stripes,&atom_bytes,&minimum))
+            return nullptr;
+        if (stripes<1 || stripes>8 || !std::isfinite(atom_bytes) || atom_bytes<=0) {
+            PyErr_SetString(PyExc_ValueError, "invalid stripe dimensions"); return nullptr;
+        }
+    } else if (!PyArg_ParseTuple(args, "nO|iO", &resources, &input, &passes, &capsule)) return nullptr;
     if (resources < 0 || resources > 2000000 || passes < 0 || passes > 8) {
         PyErr_SetString(PyExc_ValueError, "round dimensions or passes outside bounds");
         return nullptr;
     }
     Owned rows(PySequence_Fast(input, "packets must be a sequence"));
     if (!rows.p) return nullptr;
-    const auto n = PySequence_Fast_GET_SIZE(rows.p);
-    if (n > 200000) {
+    const auto input_count = PySequence_Fast_GET_SIZE(rows.p);
+    if (input_count > 200000) {
         PyErr_SetString(PyExc_ValueError, "too many route packets"); return nullptr;
     }
     try {
         std::vector<Packet> packets;
-        packets.reserve(n);
+        packets.reserve(input_count);
         size_t total_terms = 0;
-        std::unordered_map<PyObject*, std::shared_ptr<std::vector<RouteOption>>> compiled;
-        for (Py_ssize_t i = 0; i < n; ++i) {
+        RouteCache local(resources);
+        RouteCache* cache = &local;
+        if (capsule != Py_None) {
+            cache = static_cast<RouteCache*>(PyCapsule_GetPointer(capsule, "agentcc.RouteCache"));
+            if (!cache) return nullptr;
+            if (resources != cache->resources) {
+                PyErr_SetString(PyExc_ValueError, "route cache dimensions differ"); return nullptr;
+            }
+        }
+        auto& compiled = cache->routes;
+        for (Py_ssize_t i = 0; i < input_count; ++i) {
             PyObject* row = PySequence_Fast_GET_ITEM(rows.p, i);
             PyObject* options;
             Packet packet;
-            if (!PyArg_ParseTuple(row, "Odd", &options, &packet.bytes, &packet.packet_bytes)) return nullptr;
+            int atoms=1;
+            if (grouped) {
+                if (!PyArg_ParseTuple(row,"Oi",&options,&atoms)) return nullptr;
+                if (atoms<1) { PyErr_SetString(PyExc_ValueError,"invalid atom count"); return nullptr; }
+                packet.bytes=packet.packet_bytes=atom_bytes;
+            } else if (!PyArg_ParseTuple(row, "Odd", &options, &packet.bytes, &packet.packet_bytes)) return nullptr;
             if (!PyTuple_Check(options) || PyTuple_GET_SIZE(options) == 0 ||
                 PyTuple_GET_SIZE(options) > 128 || !std::isfinite(packet.bytes) ||
                 !std::isfinite(packet.packet_bytes) || packet.bytes <= 0 || packet.packet_bytes <= 0) {
@@ -103,7 +152,7 @@ PyObject* optimize_round(PyObject*, PyObject* args) {
             if (found != compiled.end()) {
                 packet.options = found->second;
             } else {
-                packet.options = std::make_shared<std::vector<RouteOption>>();
+                packet.options = std::make_shared<RouteFamily>();
                 for (Py_ssize_t j = 0; j < PyTuple_GET_SIZE(options); ++j) {
                     PyObject* option = PyTuple_GET_ITEM(options, j);
                     PyObject *terms, *path;
@@ -113,35 +162,98 @@ PyObject* optimize_round(PyObject*, PyObject* args) {
                         !std::isfinite(route.serial) || route.serial < 0) {
                         PyErr_SetString(PyExc_ValueError, "invalid route coefficients"); return nullptr;
                     }
-                    std::set<size_t> seen;
+                    route.terms.reserve(PyTuple_GET_SIZE(terms));
+                    auto& family = *packet.options;
+                    family.max_serial = std::max(family.max_serial, route.serial);
+                    family.max_overhead = std::max(family.max_overhead, route.overhead);
+                    family.incidence += PyTuple_GET_SIZE(terms);
+                    std::set<size_t> long_path;
                     for (Py_ssize_t k = 0; k < PyTuple_GET_SIZE(terms); ++k) {
                         Py_ssize_t index;
                         double factor;
                         if (!read_term(terms, k, resources, index, factor)) return nullptr;
-                        if (!seen.insert(index).second) {
+                        bool duplicate = route.terms.capacity()>24
+                            ? !long_path.insert(index).second
+                            : std::any_of(route.terms.begin(), route.terms.end(),
+                                [index](auto term){ return term.first==static_cast<size_t>(index); });
+                        if (duplicate) {
                             PyErr_SetString(PyExc_ValueError, "duplicate compiled resource index"); return nullptr;
                         }
+                        family.max_factor = std::max(family.max_factor, factor);
                         route.terms.emplace_back(index, factor);
                     }
                     packet.options->push_back(std::move(route));
                 }
-                compiled.emplace(options, packet.options);
-            }
-            for (const auto& route : packet.routes()) {
-                if (!std::isfinite(route.overhead + route.serial * packet.packet_bytes)) {
-                    PyErr_SetString(PyExc_ValueError, "packet duration exceeds finite bounds"); return nullptr;
+                if (cache == &local || compiled.size() < 32768) {
+                    compiled.emplace(options, packet.options);
+                    Py_INCREF(options);
                 }
-                for (auto [index, factor] : route.terms) {
-                    if (++total_terms > 16000000 || !std::isfinite(factor * packet.bytes)) {
-                        PyErr_SetString(PyExc_ValueError, "route incidence or byte load exceeds bounds"); return nullptr;
+            }
+            const auto& family = *packet.options;
+            int lanes=grouped ? std::min({stripes,atoms,int(family.size())}) : 1;
+            if (packets.size()+lanes>200000) {
+                PyErr_SetString(PyExc_ValueError,"too many route packets"); return nullptr;
+            }
+            for (int lane=0;lane<lanes;++lane) {
+                if (grouped) {
+                    int64_t count=int64_t(atoms)*(lane+1)/lanes-int64_t(atoms)*lane/lanes;
+                    packet.bytes=count*atom_bytes;
+                    packet.packet_bytes=(minimum?1:(count+3)/4)*atom_bytes;
+                }
+                total_terms += family.incidence;
+                if (total_terms>16000000 || !std::isfinite(family.max_factor*packet.bytes)) {
+                    PyErr_SetString(PyExc_ValueError, "route incidence or byte load exceeds bounds"); return nullptr;
+                }
+                if (!std::isfinite(family.max_overhead + family.max_serial * packet.packet_bytes)) {
+                    for (const auto& route : family) {
+                        if (!std::isfinite(route.overhead + route.serial * packet.packet_bytes)) {
+                            PyErr_SetString(PyExc_ValueError, "packet duration exceeds finite bounds"); return nullptr;
+                        }
                     }
                 }
+                packets.push_back(packet);
             }
-            packets.push_back(std::move(packet));
         }
+        Py_ssize_t n=packets.size();
         auto released = std::make_unique<AllowThreads>();
         std::vector<size_t> selected(n, 0);
-        RoundOptimizer state(resources);
+        if (grouped && passes==0) {
+            // Monotone insertion needs only a running maximum. Deleting and
+            // reinserting packets is exclusive to the balanced search below.
+            std::vector<double> loads(resources);
+            double peak=0., latency=0., serial=0.;
+            for (size_t i=0;i<packets.size();++i) {
+                const auto& packet=packets[i];
+                std::array<double,4> best{};
+                for (size_t j=0;j<packet.routes().size();++j) {
+                    const auto& route=packet.routes()[j];
+                    double busy=0., energy=0.;
+                    for(auto [k,rate]:route.terms) {
+                        double before=loads[k], after=before+packet.bytes*rate;
+                        busy=std::max(busy,after);
+                        energy+=after*after-before*before;
+                    }
+                    double duration=route.overhead+packet.packet_bytes*route.serial;
+                    std::array<double,4> score{std::max({serial,duration,std::max(latency,route.overhead)+std::max(peak,busy)}),
+                                               busy,energy,duration};
+                    if(j==0 || score<best){ best=score; selected[i]=j; }
+                }
+                const auto& route=packet.routes()[selected[i]];
+                for(auto [k,rate]:route.terms) {
+                    loads[k]+=packet.bytes*rate;
+                    peak=std::max(peak,loads[k]);
+                }
+                latency=std::max(latency,route.overhead);
+                serial=std::max(serial,route.overhead+packet.packet_bytes*route.serial);
+            }
+            double duration=std::max(serial,latency+peak);
+            released.reset();
+            Owned result(PyBytes_FromStringAndSize(nullptr,n));if(!result.p)return nullptr;
+            char* bytes=PyBytes_AS_STRING(result.p);
+            for(Py_ssize_t i=0;i<n;++i) bytes[i]=static_cast<char>(selected[i]);
+            return Py_BuildValue("Oddi",result.p,duration,duration,0);
+        }
+        RoundOptimizer state(resources,n);
         for (size_t i = 0; i < packets.size(); ++i) {
             auto& packet = packets[i];
             auto best = state.score(packet, packet.routes()[0]);
@@ -149,7 +261,7 @@ PyObject* optimize_round(PyObject*, PyObject* args) {
                 auto score = state.score(packet, packet.routes()[j]);
                 if (score < best) { best = score; selected[i] = j; }
             }
-            state.change(packet, packet.routes()[selected[i]], true);
+            state.change(i,packet, packet.routes()[selected[i]], true);
         }
         const auto original = selected;
         const double before = state.time();
@@ -161,7 +273,7 @@ PyObject* optimize_round(PyObject*, PyObject* args) {
                 auto& packet = packets[i];
                 if (packet.routes().size() == 1) continue;
                 size_t best_index = selected[i];
-                state.change(packet, packet.routes()[best_index], false);
+                state.change(i,packet, packet.routes()[best_index], false);
                 auto s = state.score(packet, packet.routes()[best_index]);
                 // The exact duration is primary. Quadratic load breaks plateaus.
                 std::array<double, 3> best{s[0], s[2], s[3]};
@@ -172,20 +284,36 @@ PyObject* optimize_round(PyObject*, PyObject* args) {
                 }
                 changed += best_index != selected[i];
                 selected[i] = best_index;
-                state.change(packet, packet.routes()[best_index], true);
+                state.change(i,packet, packet.routes()[best_index], true);
             }
             moved += changed;
             if (!changed) break;
         }
         // Rebuild once to remove accumulated subtraction roundoff.
-        RoundOptimizer final_state(resources);
-        for (size_t i = 0; i < packets.size(); ++i)
-            final_state.change(packets[i], packets[i].routes()[selected[i]], true);
-        double after = final_state.time();
+        std::fill(state.loads.begin(),state.loads.end(),0.);
+        double busy=0., overhead=0., serial=0.;
+        for (size_t i=0;i<packets.size();++i) {
+            const auto& packet=packets[i];
+            const auto& route=packet.routes()[selected[i]];
+            for (auto [resource,factor]:route.terms) {
+                state.loads[resource]+=packet.bytes*factor;
+                busy=std::max(busy,state.loads[resource]);
+            }
+            overhead=std::max(overhead,route.overhead);
+            serial=std::max(serial,route.overhead+packet.packet_bytes*route.serial);
+        }
+        double after=std::max(serial,overhead+busy);
         if (after > before + std::max(1e-9, before * 1e-12)) {
             selected = original; after = before; moved = 0;
         }
         released.reset();
+        if (grouped) {
+            Owned compact(PyBytes_FromStringAndSize(nullptr,n));
+            if (!compact.p) return nullptr;
+            char* out=PyBytes_AS_STRING(compact.p);
+            for (Py_ssize_t i=0;i<n;++i) out[i]=static_cast<char>(selected[i]);
+            return Py_BuildValue("Oddn", compact.p,before,after,static_cast<Py_ssize_t>(moved));
+        }
         Owned result(PyList_New(n));
         if (!result.p) return nullptr;
         for (Py_ssize_t i = 0; i < n; ++i) {
@@ -199,3 +327,6 @@ PyObject* optimize_round(PyObject*, PyObject* args) {
         PyErr_SetString(PyExc_ValueError, error.what()); return nullptr;
     }
 }
+
+PyObject* optimize_round(PyObject*,PyObject* args) { return optimize_packets(args,false); }
+PyObject* optimize_groups(PyObject*,PyObject* args) { return optimize_packets(args,true); }

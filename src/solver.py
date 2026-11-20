@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 from .collectives import build as build_collective, locality_order
-from .replay import replay
+from .replay import certify as replay
 from .route_balance import _PathCosts, _RoundLoad
 from .topology import Topology
 

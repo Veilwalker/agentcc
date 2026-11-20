@@ -1,14 +1,9 @@
 {
   "version": "1.6",
-  "created_at_utc": "2026-11-05T07:08:43.249966+00:00",
-  "note": "Delivered source and tests. Restore into the project root to use existing materials/vendor and archived comparison versions. Credentials, dependencies, raw experiments and container image excluded. Main baseline is v1.5 revision-05.",
   "sha256": {
     ".dockerignore": "3f8890ea75ee14ce839164256d411822e34341f4d7e93f6fd9f15047e6a29754",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     "Dockerfile": "0ce6d2b249ae42e0ada0f58257e8c251a591cb9656733a910f9095dcf837942e",
-    "README.md": "1dbe93e816aa4b5dfc46844c55599971b79d0d90dfe41f94b5cfa969e90864ba",
-    "THEORY.md": "1b5f997a9e23de9e59c7008f2cc15f2148d66c5bfc73d1f0cd8768d9723f9865",
-    "VALIDATION.md": "f64d7ca93ae0640e9cc73dcff77ad685807af2682c02c92ef7bacdf64e89e32e",
     "src/__init__.py": "b8f2a199ddfc6b130c9a3701e69e98261de25f482c78f12a715616b9bc0e2330",
     "src/cli.py": "33b0463093366ef45c69c8b8abfa38755c411209340517f813939756109da28a",
     "src/collectives.py": "4bcc718ef2abde5236b085d5e384a2f9a1cda6f69d82d43376d9b00139e65af6",

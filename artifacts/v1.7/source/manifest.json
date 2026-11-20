@@ -1,15 +1,9 @@
 {
   "version": "1.7",
-  "created_at_utc": "2026-11-06T06:37:48.025445+00:00",
-  "note": "Production sources match final release-sdk benchmark. Tests/docs include final validation. No credentials, SDK, inputs, experiments or container image.",
   "sha256": {
     ".dockerignore": "3f8890ea75ee14ce839164256d411822e34341f4d7e93f6fd9f15047e6a29754",
     ".env.example": "ddb87f3a54bc13fbb31414e6aad5e48eb0b5356cf043c47c16bb829eabb3038c",
     "Dockerfile": "0ce6d2b249ae42e0ada0f58257e8c251a591cb9656733a910f9095dcf837942e",
-    "README.md": "7cd7b81b8b7886ef2c3f3160ee76d6bc79aa4353b7b3f4358d67da2fb7a65e7e",
-    "SNAPSHOT.md": "6cfa7587aeaf7126c87cac7cc8d92e7ba05725307e555e46907892ac816254ac",
-    "THEORY.md": "876a716350353779641af81b8a191506a1877da3eca7e1c358145981ee5b8c0e",
-    "VALIDATION.md": "424fa2cb4fbcbe6a2f09af758c9b26fe797be72d7c9c3493ea87db9960e63363",
     "src/__init__.py": "03bf423aad1a5ada654e555854aa82c148e586717162febe27465326ad6bb631",
     "src/cli.py": "d682fea6a329a0530baf29df5d26261a95bd4053ddca2672cdd56fea7eab0b86",
     "src/code_policy.py": "268ba9e5cd9945a13fc22dea94e8b3ed1ac9bcc3f11f7374f9677a88d1a8dadf",

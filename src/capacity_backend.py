@@ -21,7 +21,7 @@ def load_native(mode):
                 'using the same Python interpreter as the service.'
             ) from error
         return None
-    if module.API_VERSION != 1:
+    if module.API_VERSION != 2:
         raise RuntimeError('unsupported C++ capacity extension API')
     return module
 

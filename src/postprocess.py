@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 from .packetization import repacketize, MAX_OUTPUT_TRANSFERS
-from .replay import replay
+from .replay import certify as replay
 from .route_joint import propose_joint
 from .selection import improves
 
